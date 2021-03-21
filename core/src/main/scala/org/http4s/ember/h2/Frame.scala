@@ -63,8 +63,8 @@ object Frame {
     // Padded = Bit 3 indicates
     def fromRawFrame(rawFrame: RawFrame): Option[Data] = {
       if (rawFrame.`type` === `type`) {
-        val endStream = (rawFrame.flags & (0x01 << 0)) < 0
-        val padded = (rawFrame.flags & (0x01 << 3)) < 0
+        val endStream = (rawFrame.flags & (0x01 << 0)) != 0
+        val padded = (rawFrame.flags & (0x01 << 3)) != 0
         if (padded) {
           val padLength = rawFrame.payload(0)
           val baseSize = rawFrame.payload.size.toInt - 1
@@ -130,10 +130,10 @@ object Frame {
     def fromRawFrame(rawFrame: RawFrame): Option[Headers] = 
       rawFrame.`type` match {
         case `type` => 
-          val endStream = (rawFrame.flags & (0x01 << 0)) < 0
-          val endHeaders = (rawFrame.flags & (0x01 << 2)) < 0
-          val padded = (rawFrame.flags & (0x01 << 3)) < 0
-          val priority = (rawFrame.flags & (0x01 << 5)) < 0
+          val endStream = (rawFrame.flags & (0x01 << 0)) != 0
+          val endHeaders = (rawFrame.flags & (0x01 << 2)) != 0
+          val padded = (rawFrame.flags & (0x01 << 3)) != 0
+          val priority = (rawFrame.flags & (0x01 << 5)) != 0
 
           (priority, padded) match {
             case (false, false) => 
