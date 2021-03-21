@@ -65,8 +65,8 @@ object Decoder {
       case Settings(_, ack, list) => ???
       case Data(identifier, data, pad, endStream) =>
         ???
-      case Frame.Headers(_, _, exlusiveStreamDependency, streamDependency, weight, endHeaders, headerBlock, padding) =>
-        decodeHeaders[F](tDecoder, headerBlock).flatMap{
+      case Frame.Headers(_, _,_, _,  headerBlock, padding) =>
+        decodeHeaders[F](tDecoder, headerBlock.toArray).flatMap{
           case headers => 
             val methodO = headers.collectFirstSome{ case (PseudoHeaders.Method, value) => Method.fromString(value).toOption }
             val schemeO = headers.collectFirstSome{ case (PseudoHeaders.Scheme, value) => org.http4s.Uri.Scheme.fromString(value).toOption}
