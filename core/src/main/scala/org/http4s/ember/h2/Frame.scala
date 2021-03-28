@@ -91,7 +91,16 @@ object Frame {
   def fromRaw(rawFrame: RawFrame): Option[Frame] = {
     rawFrame.`type` match {
       case Data.`type` => Data.fromRaw(rawFrame)
-      case _ => ???
+      case Headers.`type` => Headers.fromRaw(rawFrame)
+      case Priority.`type` => Priority.fromRaw(rawFrame)
+      case RstStream.`type` => RstStream.fromRaw(rawFrame)
+      case Settings.`type` => Settings.fromRaw(rawFrame)
+      case PushPromise.`type` => ???
+      case Ping.`type` => Ping.fromRaw(rawFrame)
+      case GoAway.`type` => ???
+      case WindowUpdate.`type` => ???
+      case Continuation.`type` => ???
+      case _ => None
     }
   }
 
@@ -341,7 +350,7 @@ object Frame {
   case class RstStream(
     identifier: Int, 
     value: Integer
-  )
+  ) extends Frame
   object RstStream {
     val `type`: Byte = 0x3
 
@@ -457,7 +466,7 @@ object Frame {
     |                           Padding (*)                       ...
     +---------------------------------------------------------------+
   */
-  case class PushPromise(identifier: Int, endHeaders: Boolean, promisedStreamId: Int, headerBlock: Array[Byte], padding: Option[Array[Byte]]) extends Frame
+  case class PushPromise(identifier: Int, endHeaders: Boolean, promisedStreamId: Int, headerBlock: ByteVector, padding: Option[ByteVector]) extends Frame
   object PushPromise {
     val `type`: Byte = 0x5
   }
@@ -470,9 +479,31 @@ object Frame {
     |                                                               |
     +---------------------------------------------------------------+
   */
-  case class Ping(identifier: Int, ack: Boolean, data: Array[Byte]) extends Frame// Always exactly 8 bytes
+  case class Ping(identifier: Int, ack: Boolean, data: Option[ByteVector]) extends Frame// Always exactly 8 bytes
   object Ping {
     val `type`: Byte = 0x6
+
+
+    val default = Ping(0, false, None)
+    val ack = Ping(0, true, None)
+
+    val emptyBV = ByteVector(0, 0, 0, 0, 0, 0, 0, 0)
+
+    def toRaw(ping: Ping): RawFrame = {
+      val flag: Byte = if (ping.ack) 0 | (1 << 0) else 0
+      val payload = ping.data.fold(emptyBV)(bv => if (bv.length === 8) bv else emptyBV)
+
+      RawFrame(8, `type`, flag, ping.identifier, payload)
+    }
+
+    def fromRaw(raw: RawFrame): Option[Ping] = {
+      if (raw.`type` == `type`){
+        val ack = (raw.flags & (0x01 << 0)) != 0
+        val payload = if (raw.payload == emptyBV) None else Some(raw.payload)
+        
+        Ping(raw.identifier, ack, payload).some
+      } else None
+    }
 
   }
 
@@ -485,7 +516,7 @@ object Frame {
     |                  Additional Debug Data (*)                    |
     +---------------------------------------------------------------+
   */
-  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Array[Byte]) extends Frame
+  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: ByteVector) extends Frame
   object GoAway {
     val `type`: Byte = 0x7
 

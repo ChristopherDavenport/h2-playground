@@ -123,5 +123,15 @@ class FrameSpec extends CatsEffectSuite {
       init.some
     )
   }
+
+  test("Ping should traverse"){
+    val init = Frame.Ping.ack
+    val encoded = Frame.Ping.toRaw(init)
+    val back = Frame.Ping.fromRaw(encoded)
+    assertEquals(
+      back,
+      init.some
+    )
+  }
   
 }
