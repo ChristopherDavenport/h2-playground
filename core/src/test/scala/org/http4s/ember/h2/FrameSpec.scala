@@ -101,5 +101,27 @@ class FrameSpec extends CatsEffectSuite {
       init.some
     )
   }
+
+  test("Settings should traverse"){
+    val init = Frame.Settings(
+      0x0, 
+      true, 
+      List(
+        Frame.Settings.SettingsHeaderTableSize(4096),
+        Frame.Settings.SettingsEnablePush(true),
+        Frame.Settings.SettingsMaxConcurrentStreams(1024),
+        Frame.Settings.SettingsInitialWindowSize(65535),
+        Frame.Settings.SettingsMaxFrameSize(16384),
+        Frame.Settings.SettingsMaxHeaderListSize(4096),
+        Frame.Settings.Unknown(14, 56)
+      )
+    )
+    val encoded = Frame.Settings.toRaw(init)
+    val back = Frame.Settings.fromRaw(encoded)
+    assertEquals(
+      back,
+      init.some
+    )
+  }
   
 }

@@ -320,7 +320,7 @@ object Frame {
 
     def toRaw(priority: Priority): RawFrame = {
       val payload = {
-        val dep0 = ((priority.streamDependency >> 24) & 0xff).toByte
+          val dep0 = ((priority.streamDependency >> 24) & 0xff).toByte
           val dep1 = ((priority.streamDependency >> 16) & 0xff).toByte
           val dep2 = ((priority.streamDependency >> 8) & 0xff).toByte
           val dep3 = ((priority.streamDependency >> 0) & 0xff).toByte
@@ -374,17 +374,75 @@ object Frame {
     val `type`: Byte = 0x4
     val Ack = Settings(0x0, true, Nil)
 
-    sealed abstract class Setting(identifier: Short, value: Integer)
+    // Effect?
+    def fromRaw(raw: RawFrame): Option[Settings] = {
+      if (raw.`type` == `type` && raw.payload.size % 6 == 0) {
+        val ack = (raw.flags & (0x01 << 0)) != 0
+        val settings = for {
+          i <- 0 to (raw.payload.size.toInt - 5) by 6
+        } yield {
+          val s =  (raw.payload(i) << 8) + (raw.payload(i + 1) << 0)
+          val v0 = ((raw.payload(i + 2) & 0xff) << 24)
+          val v1 = ((raw.payload(i + 3) & 0xff) << 16)
+          val v2 = ((raw.payload(i + 4) & 0xff) << 8)
+          val v3 = ((raw.payload(i + 5) & 0xff) << 0)
+          val value = v0 | v1 | v2 | v3
+          Setting(s.toShort, value)
+        }
+        Settings(raw.identifier, ack, settings.toList).some
+      } else None
+    }
+
+    def toRaw(settings: Settings): RawFrame = {
+      val payload = settings.list.foldRight(ByteVector.empty){ case (next, bv) => 
+        val s0 = ((next.identifier >> 8) & 0xff).toByte
+        val s1 = ((next.identifier >> 0) & 0xff).toByte
+
+        val v0 = ((next.value >> 24) & 0xff).toByte
+        val v1 = ((next.value >> 16) & 0xff).toByte
+        val v2 = ((next.value >> 8) & 0xff).toByte
+        val v3 = ((next.value >> 0) & 0xff).toByte
+        ByteVector(s0, s1, v0, v1, v2, v3) ++ bv
+      }
+      val flag: Byte = if (settings.ack) 0 | (1 << 0) else 0
+      RawFrame(payload.size.toInt, `type`, flag, settings.identifier, payload)
+    }
+
+    sealed abstract class Setting(val identifier: Short, val value: Integer)
+    object Setting {
+      def apply(identifier: Short, value: Integer): Setting = identifier match {
+        case 0x0 => SettingsHeaderTableSize(value)
+        case 0x2 => value match {
+          case 1 => SettingsEnablePush(true)
+          case 0 => SettingsEnablePush(false)
+          case other => Unknown(identifier, value)
+        }
+        case 0x3 => SettingsMaxConcurrentStreams(value)
+        case 0x4 => SettingsInitialWindowSize(value)
+        case 0x5 => SettingsMaxFrameSize(value)
+        case 0x6 => SettingsMaxHeaderListSize(value)
+        case other => Unknown(identifier, value)
+      }
+    }
+    //The initial value is 4,096 octets
     case class SettingsHeaderTableSize(size: Integer) extends Setting(0x0, size)
+    // Default true
     case class SettingsEnablePush(isEnabled: Boolean) extends Setting(0x2, if (isEnabled) 1 else 0)
+    // Unbounded
     case class SettingsMaxConcurrentStreams(maxConcurrency: Integer) extends Setting(0x3, maxConcurrency)
+    // The initial value is 2^16-1 (65,535) octets.
     case class SettingsInitialWindowSize(windowSize: Integer) extends Setting(0x4, windowSize)
+    // The initial value is 2^14 (16,384) octets
     case class SettingsMaxFrameSize(frameSize: Integer) extends Setting(0x5, frameSize)
+    // The value is based on the
+    // uncompressed size of header fields, including the length of the
+    // name and value in octets plus an overhead of 32 octets for each
+    // header field.
     case class SettingsMaxHeaderListSize(listSize: Int) extends Setting(0x6, listSize)
     // DO NOT PROCESS
     // An endpoint that receives a SETTINGS frame with any unknown or
     // unsupported identifier MUST ignore that setting.
-    case class Unknown(identifier: Short, value: Integer) extends Setting(identifier, value)
+    case class Unknown(override val identifier: Short, override val value: Integer) extends Setting(identifier, value)
   }
 
 
