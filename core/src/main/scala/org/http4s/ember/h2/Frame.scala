@@ -516,9 +516,51 @@ object Frame {
     |                  Additional Debug Data (*)                    |
     +---------------------------------------------------------------+
   */
-  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: ByteVector) extends Frame
+  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Option[ByteVector]) extends Frame
   object GoAway {
     val `type`: Byte = 0x7
+
+    def toRaw(goAway: GoAway): RawFrame = {
+      val payload = {
+        val s0 = ((goAway.lastStreamId >> 24) & 0xff)
+        val s1: Byte = ((goAway.lastStreamId >> 16) & 0xff).toByte
+        val s2: Byte = ((goAway.lastStreamId >> 8) & 0xff).toByte
+        val s3: Byte = ((goAway.lastStreamId >> 0) & 0xff).toByte
+        val modS0: Byte = (s0 & ~(1 << 7)).toByte
+
+        val e0: Byte = ((goAway.errorCode >> 24) & 0xff).toByte
+        val e1: Byte = ((goAway.errorCode >> 16) & 0xff).toByte
+        val e2: Byte = ((goAway.errorCode >> 8) & 0xff).toByte
+        val e3: Byte = ((goAway.errorCode >> 0) & 0xff).toByte
+
+        ByteVector(modS0, s1, s2, s3, e0, e1, e2, e3) ++ goAway.additionalDebugData.getOrElse(ByteVector.empty)
+      }
+      
+      RawFrame(payload.length.toInt, `type`, 0, goAway.identifier, payload)
+    }
+
+    def fromRaw(raw: RawFrame): Option[GoAway] = {
+      if (raw.`type` == `type`){
+        val s0 = (raw.payload(0) & 0xff) 
+        val s1 = (raw.payload(1) & 0xff) << 16
+        val s2 = (raw.payload(2) & 0xff) << 8
+        val s3 = (raw.payload(3) & 0xff) << 0
+        val modS0 = (s0 & ~(1 << 7)) << 24
+        val s = modS0 | s1 | s2 | s3
+
+        val e0 = (raw.payload(4) & 0xff) << 24
+        val e1 = (raw.payload(5) & 0xff) << 16
+        val e2 = (raw.payload(6) & 0xff) << 8
+        val e3 = (raw.payload(7) & 0xff) << 0
+        val e = e0 | e1 | e2 | e3
+
+        val rest = {
+          val end = raw.payload.drop(8)
+          if (end.isEmpty) None else Some(end)
+        }
+        GoAway(raw.identifier, s, e, rest).some
+      } else None
+    }
 
   }
 

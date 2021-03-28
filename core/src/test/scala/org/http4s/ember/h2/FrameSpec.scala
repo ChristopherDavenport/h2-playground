@@ -133,5 +133,15 @@ class FrameSpec extends CatsEffectSuite {
       init.some
     )
   }
+
+  test("GoAway should traverse"){
+    val init = Frame.GoAway(0, 476, Int.MaxValue, Some(ByteVector(0xa)))
+    val encoded = Frame.GoAway.toRaw(init)
+    val back = Frame.GoAway.fromRaw(encoded)
+    assertEquals(
+      back,
+      init.some
+    )
+  }
   
 }

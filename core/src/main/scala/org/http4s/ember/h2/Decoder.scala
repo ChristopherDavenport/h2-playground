@@ -63,6 +63,7 @@ object Decoder {
       case Ping(_, ack, data) => ???
       case WindowUpdate(_, windowSizeIncrement) => ???
       case Settings(_, ack, list) => ???
+      case Frame.RstStream(_, _) => ???
       case Data(identifier, data, pad, endStream) =>
         ???
       case Frame.Headers(_, _,_, _,  headerBlock, padding) =>
