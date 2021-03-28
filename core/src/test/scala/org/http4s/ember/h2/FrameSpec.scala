@@ -82,6 +82,16 @@ class FrameSpec extends CatsEffectSuite {
     )
   }
 
+  test("Priority should traverse"){
+    val init = Frame.Priority(5, true, 7, 0x01)
+    val encoded = Frame.Priority.toRaw(init)
+    val back = Frame.Priority.fromRaw(encoded)
+    assertEquals(
+      back,
+      init.some
+    )
+  }
+
   test("RstStream should traverse"){
     val init = Frame.RstStream(4, 73)
     val encoded = Frame.RstStream.toRaw(init)

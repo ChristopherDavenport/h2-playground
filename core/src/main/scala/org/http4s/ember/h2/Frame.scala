@@ -297,12 +297,38 @@ object Frame {
   */
   case class Priority(
     identifier: Int, 
-    exlusiveStreamDependency: Boolean,
+    exclusive: Boolean,
     streamDependency: Int,
     weight: Byte
   ) extends Frame
   object Priority {
     val `type`: Byte = 0x2
+    def fromRaw(raw: RawFrame): Option[Priority] = {
+      if (raw.`type` == `type` && raw.payload.size == 5){
+        val s0 = raw.payload(0)
+        val s1 = raw.payload(1)
+        val s2 = raw.payload(2)
+        val s3 = raw.payload(3)
+        val mod0 = s0 & ~(1 << 7)
+        val exclusive = (s0 & (0x01 << 7)) != 0
+        val dependency = ((mod0 << 24) + (s1 << 16) + (s2 << 8) + (s3 << 0))
+        val weight = raw.payload(4)
+
+        Priority(raw.identifier, exclusive, dependency, weight).some
+      } else None
+    }
+
+    def toRaw(priority: Priority): RawFrame = {
+      val payload = {
+        val dep0 = ((priority.streamDependency >> 24) & 0xff).toByte
+          val dep1 = ((priority.streamDependency >> 16) & 0xff).toByte
+          val dep2 = ((priority.streamDependency >> 8) & 0xff).toByte
+          val dep3 = ((priority.streamDependency >> 0) & 0xff).toByte
+          val modDep0 = (if (priority.exclusive) dep0 | (1 << 7) else dep0 & ~(1 << 7)).toByte
+          ByteVector(modDep0, dep1, dep2, dep3, priority.weight)
+      }
+      RawFrame(payload.size.toInt, `type`, 0, priority.identifier, payload)
+    }
   }
 
 
