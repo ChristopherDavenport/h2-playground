@@ -95,13 +95,26 @@ object Frame {
       case Priority.`type` => Priority.fromRaw(rawFrame)
       case RstStream.`type` => RstStream.fromRaw(rawFrame)
       case Settings.`type` => Settings.fromRaw(rawFrame)
-      case PushPromise.`type` => ???
+      case PushPromise.`type` => PushPromise.fromRaw(rawFrame)
       case Ping.`type` => Ping.fromRaw(rawFrame)
-      case GoAway.`type` => ???
-      case WindowUpdate.`type` => ???
-      case Continuation.`type` => ???
+      case GoAway.`type` => GoAway.fromRaw(rawFrame)
+      case WindowUpdate.`type` => WindowUpdate.fromRaw(rawFrame)
+      case Continuation.`type` => Continuation.fromRaw(rawFrame)
       case _ => None
     }
+  }
+
+  def toRaw(frame: Frame): RawFrame = frame match {
+    case d: Data => Data.toRaw(d)
+    case h: Headers => Headers.toRaw(h)
+    case p: Priority => Priority.toRaw(p)
+    case r: RstStream => RstStream.toRaw(r)
+    case s: Settings => Settings.toRaw(s)
+    case p: PushPromise => PushPromise.toRaw(p)
+    case p: Ping => Ping.toRaw(p)
+    case g: GoAway => GoAway.toRaw(g)
+    case w: WindowUpdate => WindowUpdate.toRaw(w)
+    case c: Continuation => Continuation.toRaw(c)
   }
 
   /*
