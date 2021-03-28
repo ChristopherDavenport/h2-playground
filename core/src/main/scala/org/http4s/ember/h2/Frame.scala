@@ -605,9 +605,19 @@ object Frame {
     |                   Header Block Fragment (*)                 ...
     +---------------------------------------------------------------+
   */
-  case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: Array[Byte]) extends Frame
+  case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: ByteVector) extends Frame
   object Continuation {
     val `type`: Byte = 0x9
+    def toRaw(cont: Continuation): RawFrame = {
+      val flag: Byte = if (cont.endHeaders) 0 | (1 << 2) else 0
+      RawFrame(cont.headerBlockFragment.size.toInt, `type`, flag, cont.identifier, cont.headerBlockFragment)
+    }
+    def fromRaw(raw: RawFrame): Option[Continuation] = {
+      if (raw.`type` == `type`){
+        val endHeaders = (raw.flags & (0x01 << 2)) != 0
+        Continuation(raw.identifier, endHeaders, raw.payload).some
+      } else None
+    }
   }
 
 

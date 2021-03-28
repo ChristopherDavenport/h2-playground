@@ -153,5 +153,15 @@ class FrameSpec extends CatsEffectSuite {
       init.some
     )
   }
+
+  test("Continuation should traverse"){
+    val init = Frame.Continuation(73, true, ByteVector(0xe, 0x8, 0x3))
+    val encoded = Frame.Continuation.toRaw(init)
+    val back = Frame.Continuation.fromRaw(encoded)
+    assertEquals(
+      back,
+      init.some
+    )
+  }
   
 }
