@@ -32,16 +32,65 @@ object Frame {
 */
 
   case class RawFrame(
-    length: Int, // 3 bytes is within int range
+    length: Int, // 3 bytes is within int range -- 16,777,216 16 mb max frame, bigger isn't necessarily better
     `type`: Byte,
     flags: Byte,
     identifier: Int, // 31 bit Integer
     payload: ByteVector
   )
 
+  object RawFrame {
+
+    def fromByteVector(bv: ByteVector): Option[(RawFrame, ByteVector)] = {
+      if (bv.length >= 9) {
+        val length =  (bv(2) & 0xFF) | ((bv(1) & 0xFF) << 8) | ((bv(0) & 0xFF) << 16)
+        if (bv.length >= 9 + length) {
+          val `type` = bv(3)
+          val flags = bv(4)
+          val identifier =  (bv(8) & 0xFF) | ((bv(7) & 0xFF) << 8) | ((bv(6) & 0xFF) << 16) | ((bv(5) & 0xFF) << 24)
+          (
+            RawFrame(
+              length,
+              `type`, 
+              flags,
+              identifier,
+              bv.drop(9).take(length)
+            ),
+            bv.drop(9 + length)
+          ).some
+        } else None
+      } else None
+    }
+
+
+    // Network Byte Order is Big Endian, so Highest Identifier is First
+    def toByteVector(raw: RawFrame): ByteVector = {
+      // 3
+      val zero = ((raw.length >> 16) & 0xff).toByte
+      val one = ((raw.length >> 8) & 0xff).toByte
+      val two = ((raw.length >> 0) & 0xff).toByte
+
+      // 2
+      val t = raw.`type`
+      val f = raw.flags
+
+      // 4
+      val iZero = ((raw.identifier >> 24) & 0xff).toByte
+      val iOne = ((raw.identifier >> 16) & 0xff).toByte
+      val iTwo = ((raw.identifier >> 8) & 0xff).toByte
+      val iThree = ((raw.identifier) & 0xff).toByte
+
+      ByteVector(
+        zero, one, two, 
+        t, f, 
+        iZero, iOne, iTwo, iThree
+      ) ++ raw.payload
+    }
+  }
+
   def fromRaw(rawFrame: RawFrame): Option[Frame] = {
     rawFrame.`type` match {
-      case Data.`type` => Data.fromRawFrame(rawFrame)
+      case Data.`type` => Data.fromRaw(rawFrame)
       case _ => ???
     }
   }
@@ -61,7 +110,7 @@ object Frame {
     // 2 flags 
     // EndStream = Bit 0 indicates this is the last frame this will send
     // Padded = Bit 3 indicates
-    def fromRawFrame(rawFrame: RawFrame): Option[Data] = {
+    def fromRaw(rawFrame: RawFrame): Option[Data] = {
       if (rawFrame.`type` === `type`) {
         val endStream = (rawFrame.flags & (0x01 << 0)) != 0
         val padded = (rawFrame.flags & (0x01 << 3)) != 0
@@ -77,7 +126,7 @@ object Frame {
       } else None
     }
 
-    def toRawFrame(data: Data): RawFrame = {
+    def toRaw(data: Data): RawFrame = {
       val payload = data.pad.map(p  => 
         ByteVector(p.length.toByte) ++
         data.data ++
@@ -115,7 +164,7 @@ object Frame {
     +---------------------------------------------------------------+
   */
   case  class Headers(
-    identifier: Int,
+    identifier: Int, 
     dependency: Option[Headers.StreamDependency],
     endStream: Boolean, // No Body Follows
     endHeaders: Boolean,  // Whether or not to Expect Continuation Frame (if false, continuation must directly follow)
@@ -123,11 +172,11 @@ object Frame {
     padding: Option[ByteVector]
   ) extends Frame
   object Headers{
-    val `type` = 0x1
+    val `type`: Byte = 0x1
 
     case class StreamDependency(exclusive: Boolean, dependency: Int, weight: Byte)
 
-    def fromRawFrame(rawFrame: RawFrame): Option[Headers] = 
+    def fromRaw(rawFrame: RawFrame): Option[Headers] = 
       rawFrame.`type` match {
         case `type` => 
           val endStream = (rawFrame.flags & (0x01 << 0)) != 0
@@ -144,11 +193,14 @@ object Frame {
               val padLength = bv.get(0)
               val pad = bv.takeRight(padLength)
               val rest = bv.dropRight(padLength).drop(1)
+              val s0 = rest.get(0)
+              val s1 = rest.get(1)
+              val s2 = rest.get(2)
+              val s3 = rest.get(3)
               val weight = rest.get(4)
-              val dependency = rest.slice(0L, 3L).toBitVector
-              val exclusive = dependency(0)
-              val byteVectorCleared = dependency.drop(1).toByteVector.toArray
-              val dependsOnStream = java.nio.ByteBuffer.wrap(byteVectorCleared).getInt()
+              val mod0 = s0 & ~(1 << 7)
+              val dependsOnStream = ((mod0 << 24) + (s1 << 16) + (s2 << 8) + (s3 << 0))
+              val exclusive = (s0 & (0x01 << 7)) != 0
               val payload = rest.drop(5)
               Headers(
                 rawFrame.identifier,
@@ -160,12 +212,16 @@ object Frame {
               ).some
             case (true, false) => 
               val rest = rawFrame.payload
+              val s0 = rest.get(0)
+              val s1 = rest.get(1)
+              val s2 = rest.get(2)
+              val s3 = rest.get(3)
               val weight = rest.get(4)
-              val dependency = rest.slice(0L, 3L).toBitVector
-              val exclusive = dependency(0)
-              val byteVectorCleared = dependency.drop(1).toByteVector.toArray
-              val dependsOnStream = java.nio.ByteBuffer.wrap(byteVectorCleared).getInt()
+              val mod0 = s0 & ~(1 << 7)
+              val dependsOnStream = ((mod0 << 24) + (s1 << 16) + (s2 << 8) + (s3 << 0))
+              val exclusive = (s0 & (0x01 << 7)) != 0
               val payload = rest.drop(5)
+
               Headers(
                 rawFrame.identifier,
                 Some(StreamDependency(exclusive, dependsOnStream, weight)),
@@ -174,11 +230,12 @@ object Frame {
                 payload,
                 None
               ).some
+
             case (false, true) =>
               val bv = rawFrame.payload
               val padLength = bv.get(0)
               val pad = bv.takeRight(padLength)
-              val payload = bv.dropRight(padLength)
+              val payload = bv.dropRight(padLength).drop(1)
               Headers(
                 rawFrame.identifier,
                 None,
@@ -190,6 +247,45 @@ object Frame {
           }
         case _ => None
       }
+    def toRaw(headers: Headers): RawFrame = {
+      val flags = {
+        var init = 0
+        if (headers.endStream) init = (init | (1 << 0))
+        if (headers.endHeaders) init = (init | (1 << 2))
+        if (headers.padding.isDefined) init = (init | (1 << 3))
+        if (headers.dependency.isDefined) init = (init | (1 << 5))
+        init
+      }.toByte
+
+      val body = (headers.padding, headers.dependency) match {
+        case (None, None) => headers.headerBlock
+        case (Some(pad), None) => 
+          ByteVector(pad.length.toByte) ++ headers.headerBlock ++ 
+          pad
+        case (padO, Some(dependency)) => 
+          val dep0 = ((dependency.dependency >> 24) & 0xff).toByte
+          val dep1 = ((dependency.dependency >> 16) & 0xff).toByte
+          val dep2 = ((dependency.dependency >> 8) & 0xff).toByte
+          val dep3 = ((dependency.dependency >> 0) & 0xff).toByte
+          val modDep0 = (if (dependency.exclusive) dep0 | (1 << 7) else dep0 & ~(1 << 7)).toByte
+          val base = ByteVector(modDep0, dep1, dep2, dep3, dependency.weight) ++ headers.headerBlock
+          padO match {
+            case None => base
+            case Some(pad) => 
+              ByteVector(pad.length.toByte) ++ base ++ 
+              pad
+          }
+      }
+
+
+      RawFrame(
+        body.size.toInt,
+        `type`,
+        flags,
+        headers.identifier,
+        body
+      )
+    }
   }
 
   /*
@@ -206,7 +302,7 @@ object Frame {
     weight: Byte
   ) extends Frame
   object Priority {
-    val `type` = 0x2
+    val `type`: Byte = 0x2
   }
 
 
@@ -221,12 +317,21 @@ object Frame {
     value: Integer
   )
   object RstStream {
-    val `type` = 0x3
+    val `type`: Byte = 0x3
+
+    def toRaw(rst: RstStream): RawFrame = {
+      RawFrame(4, `type`, 0, rst.identifier, ByteVector.fromInt(rst.value.toInt))
+    }
+
+    def fromRaw(raw: RawFrame): Option[RstStream] = {
+      if (raw.`type` == `type`) RstStream(raw.identifier, raw.payload.toInt(false, ByteOrdering.BigEndian)).some
+      else None
+    }
   }
 
 
   /*
-    Payload must be a multiple of 8 octets.
+    Payload must be a multiple of 6 octets.
     n* 
     +-------------------------------+
     |       Identifier (16)         |
@@ -240,7 +345,7 @@ object Frame {
     list: List[Settings.Setting]
   ) extends Frame
   object Settings {
-    val `type` = 0x4
+    val `type`: Byte = 0x4
     val Ack = Settings(0x0, true, Nil)
 
     sealed abstract class Setting(identifier: Short, value: Integer)
@@ -270,7 +375,7 @@ object Frame {
   */
   case class PushPromise(identifier: Int, endHeaders: Boolean, promisedStreamId: Int, headerBlock: Array[Byte], padding: Option[Array[Byte]]) extends Frame
   object PushPromise {
-    val `type` = 0x5
+    val `type`: Byte = 0x5
   }
 
 
@@ -283,7 +388,7 @@ object Frame {
   */
   case class Ping(identifier: Int, ack: Boolean, data: Array[Byte]) extends Frame// Always exactly 8 bytes
   object Ping {
-    val `type` = 0x6
+    val `type`: Byte = 0x6
 
   }
 
@@ -298,7 +403,7 @@ object Frame {
   */
   case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Array[Byte]) extends Frame
   object GoAway {
-    val `type` = 0x7
+    val `type`: Byte = 0x7
 
   }
 
@@ -309,7 +414,7 @@ object Frame {
   */
   case class WindowUpdate(identifier: Int, windowSizeIncrement: Int) extends Frame
   object WindowUpdate {
-    val `type` = 0x8
+    val `type`: Byte = 0x8
   }
 
   /*
@@ -319,7 +424,7 @@ object Frame {
   */
   case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: Array[Byte]) extends Frame
   object Continuation {
-    val `type` = 0x9
+    val `type`: Byte = 0x9
   }
 
 
