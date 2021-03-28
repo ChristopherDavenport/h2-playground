@@ -124,6 +124,16 @@ class FrameSpec extends CatsEffectSuite {
     )
   }
 
+  test("PushPromise should traverse"){
+    val init = Frame.PushPromise(74, true, 107, ByteVector(0x1, 0xe, 0xb), Some(ByteVector(0x0, 0x0, 0x0)))
+    val encoded = Frame.PushPromise.toRaw(init)
+    val back = Frame.PushPromise.fromRaw(encoded)
+    assertEquals(
+      back, 
+      init.some
+    )
+  }
+
   test("Ping should traverse"){
     val init = Frame.Ping.ack
     val encoded = Frame.Ping.toRaw(init)

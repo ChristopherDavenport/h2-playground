@@ -469,6 +469,59 @@ object Frame {
   case class PushPromise(identifier: Int, endHeaders: Boolean, promisedStreamId: Int, headerBlock: ByteVector, padding: Option[ByteVector]) extends Frame
   object PushPromise {
     val `type`: Byte = 0x5
+    def toRaw(push: PushPromise): RawFrame = {
+      val flag = {
+        var base = 0
+        if (push.endHeaders) base = base | (1 << 2) 
+        if (push.padding.isDefined) base = base | (1 << 3)
+        base
+      }.toByte
+      val payload = {
+        val base: ByteVector = {
+          val s0 = ((push.promisedStreamId >> 24) & 0xff)
+          val s1: Byte = ((push.promisedStreamId >> 16) & 0xff).toByte
+          val s2: Byte = ((push.promisedStreamId >> 8) & 0xff).toByte
+          val s3: Byte = ((push.promisedStreamId >> 0) & 0xff).toByte
+          val modS0: Byte = (s0 & ~(1 << 7)).toByte
+
+          ByteVector(modS0, s1, s2, s3) ++ push.headerBlock
+        }
+        push.padding.fold(base)(padding => ByteVector(padding.length.toByte) ++ base ++ padding)
+      }
+      RawFrame(payload.size.toInt, `type`, flag, push.identifier, payload)
+    }
+
+    def fromRaw(raw: RawFrame): Option[PushPromise] = {
+      if (raw.`type` == `type`){
+        val endHeaders = (raw.flags & (0x01 << 2)) != 0
+        val padded = (raw.flags & (0x01 << 3)) != 0
+
+        if (padded){
+
+          val padLength = raw.payload(0)
+          val s0 = (raw.payload(1) & 0xff) 
+          val s1 = (raw.payload(2) & 0xff) << 16
+          val s2 = (raw.payload(3) & 0xff) << 8
+          val s3 = (raw.payload(4) & 0xff) << 0
+          val modS0 = (s0 & ~(1 << 7)) << 24
+          val s = modS0 | s1 | s2 | s3
+
+          PushPromise(raw.identifier, endHeaders, s, raw.payload.drop(5).dropRight(padLength), raw.payload.takeRight(padLength).some).some
+        } else {
+          val s0 = (raw.payload(0) & 0xff) 
+          val s1 = (raw.payload(1) & 0xff) << 16
+          val s2 = (raw.payload(2) & 0xff) << 8
+          val s3 = (raw.payload(3) & 0xff) << 0
+          val modS0 = (s0 & ~(1 << 7)) << 24
+          val s = modS0 | s1 | s2 | s3
+
+          PushPromise(raw.identifier, endHeaders, s, raw.payload.drop(4), None).some
+
+        }
+
+
+      } else None
+    }
   }
 
 
