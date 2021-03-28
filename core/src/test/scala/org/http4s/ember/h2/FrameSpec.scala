@@ -143,5 +143,15 @@ class FrameSpec extends CatsEffectSuite {
       init.some
     )
   }
+
+  test("WindowUpdate should traverse"){
+    val init = Frame.WindowUpdate(73, 10210)
+    val encoded = Frame.WindowUpdate.toRaw(init)
+    val back = Frame.WindowUpdate.fromRaw(encoded)
+    assertEquals(
+      back,
+      init.some
+    )
+  }
   
 }

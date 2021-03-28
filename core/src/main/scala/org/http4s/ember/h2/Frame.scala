@@ -572,6 +572,32 @@ object Frame {
   case class WindowUpdate(identifier: Int, windowSizeIncrement: Int) extends Frame
   object WindowUpdate {
     val `type`: Byte = 0x8
+
+    def toRaw(windowUpdate: WindowUpdate): RawFrame = {
+      val payload = {
+        val s0 = ((windowUpdate.windowSizeIncrement >> 24) & 0xff)
+        val s1: Byte = ((windowUpdate.windowSizeIncrement >> 16) & 0xff).toByte
+        val s2: Byte = ((windowUpdate.windowSizeIncrement >> 8) & 0xff).toByte
+        val s3: Byte = ((windowUpdate.windowSizeIncrement >> 0) & 0xff).toByte
+        val modS0: Byte = (s0 & ~(1 << 7)).toByte
+        ByteVector(modS0, s1, s2, s3)
+      }
+
+      RawFrame(payload.length.toInt, `type`, 0, windowUpdate.identifier, payload)
+    }
+
+    def fromRaw(raw: RawFrame): Option[WindowUpdate] = {
+      if (raw.`type` == `type` && raw.payload.size == 4){
+        val s0 = (raw.payload(0) & 0xff) 
+        val s1 = (raw.payload(1) & 0xff) << 16
+        val s2 = (raw.payload(2) & 0xff) << 8
+        val s3 = (raw.payload(3) & 0xff) << 0
+        val modS0 = (s0 & ~(1 << 7)) << 24
+        val s = modS0 | s1 | s2 | s3
+
+        WindowUpdate(raw.identifier, s).some
+      } else None
+    }
   }
 
   /*
