@@ -18,13 +18,14 @@ import org.http4s.ember.h2.Frame.WindowUpdate
 import org.http4s.ember.h2.Frame.Data
 import org.http4s.ember.h2.Frame.Priority
 import org.http4s.ember.h2.Frame.Settings
+import scodec.bits._
 
 object Decoder {
   
   // No Partials. We must concatenate frames to get the input array
-  def decodeHeaders[F[_]: Sync](tDecoder: com.twitter.hpack.Decoder, array: Array[Byte]): F[List[(String, String)]] = Sync[F].delay{
+  def decodeHeaders[F[_]: Sync](tDecoder: com.twitter.hpack.Decoder, bv: ByteVector): F[List[(String, String)]] = Sync[F].delay{
     var buffer = new ListBuffer[(String, String)]
-    val is = new ByteArrayInputStream(array)
+    val is = new ByteArrayInputStream(bv.toArray)
     val listener = new HeaderListener{
       def addHeader(name: Array[Byte], value: Array[Byte], sensitive: Boolean): Unit = {
         buffer.addOne(
@@ -67,7 +68,7 @@ object Decoder {
       case Data(identifier, data, pad, endStream) =>
         ???
       case Frame.Headers(_, _,_, _,  headerBlock, padding) =>
-        decodeHeaders[F](tDecoder, headerBlock.toArray).flatMap{
+        decodeHeaders[F](tDecoder, headerBlock).flatMap{
           case headers => 
             val methodO = headers.collectFirstSome{ case (PseudoHeaders.Method, value) => Method.fromString(value).toOption }
             val schemeO = headers.collectFirstSome{ case (PseudoHeaders.Scheme, value) => org.http4s.Uri.Scheme.fromString(value).toOption}

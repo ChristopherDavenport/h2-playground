@@ -117,6 +117,9 @@ object Frame {
     case c: Continuation => Continuation.toRaw(c)
   }
 
+  def toByteVector(frame: Frame): ByteVector = 
+    toRaw.andThen(RawFrame.toByteVector)(frame)
+
   /*
     +---------------+
     |Pad Length? (8)|
