@@ -129,7 +129,9 @@ object Frame {
     |                           Padding (*)                       ...
     +---------------------------------------------------------------+
     */
-  case class Data(identifier: Int, data: ByteVector, pad: Option[ByteVector], endStream: Boolean) extends Frame
+  case class Data(identifier: Int, data: ByteVector, pad: Option[ByteVector], endStream: Boolean) extends Frame{
+    override def toString: String = s"Data(identifier=$identifier, data=$data, pad=$pad, endStream=$endStream)"
+  }
   object Data {
     val `type`: Byte = 0x0
     // 2 flags 
@@ -195,7 +197,10 @@ object Frame {
     endHeaders: Boolean,  // Whether or not to Expect Continuation Frame (if false, continuation must directly follow)
     headerBlock: ByteVector,
     padding: Option[ByteVector]
-  ) extends Frame
+  ) extends Frame{
+    override def toString: String = 
+      s"Headers(identifier=$identifier, dependency=$dependency, endStream=$endStream, endHeaders=$endHeaders, headerBlock=$headerBlock, padding=$padding)"
+  }
   object Headers{
     val `type`: Byte = 0x1
 
@@ -398,6 +403,25 @@ object Frame {
   object Settings {
     val `type`: Byte = 0x4
     val Ack = Settings(0x0, true, Nil)
+
+    def updateSettings(settings: Settings, connectSettings: ConnectionSettings): ConnectionSettings = {
+      settings.list.foldLeft(connectSettings){
+        case (base, setting: SettingsHeaderTableSize) => 
+          base.copy(tableSize = setting)
+        case (base, setting: SettingsEnablePush) => 
+          base.copy(enablePush = setting)
+        case (base, setting: SettingsMaxConcurrentStreams) => 
+          base.copy(maxConcurrentStreams = setting)
+        case (base, setting: SettingsInitialWindowSize) => 
+          base.copy(initialWindowSize = setting)
+        case (base, setting: SettingsMaxFrameSize) => 
+          base.copy(maxFrameSize = setting)
+        case (base, setting: SettingsMaxHeaderListSize) => 
+          base.copy(maxHeaderListSize = setting.some)
+        case (base, _) => base
+      }
+    }
+
     case class ConnectionSettings(
       tableSize: SettingsHeaderTableSize,
       enablePush: SettingsEnablePush,
@@ -603,7 +627,10 @@ object Frame {
     |                  Additional Debug Data (*)                    |
     +---------------------------------------------------------------+
   */
-  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Option[ByteVector]) extends Frame
+  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Option[ByteVector]) extends Frame{
+    override def toString = 
+      s"GoAway(identifier=$identifier, lastStreamId=$lastStreamId, errorCode=${H2Error.fromInt(errorCode).getOrElse(errorCode)}, additionalDebugData=$additionalDebugData)"
+  }
   object GoAway {
     val `type`: Byte = 0x7
 

@@ -1,9 +1,28 @@
 package org.http4s.ember.h2
 
+import cats.syntax.all._
 sealed abstract class H2Error(val value: Int){
   
 }
 object H2Error {
+
+  def fromInt(int: Int): Option[H2Error] = int match {
+    case NoError.value => NoError.some
+    case ProtocolError.value => ProtocolError.some
+    case InternalError.value => InternalError.some
+    case FlowControlError.value => FlowControlError.some
+    case SettingsTimeout.value => SettingsTimeout.some
+    case StreamClosed.value => StreamClosed.some
+    case FrameSizeError.value => FrameSizeError.some
+    case RefusedStream.value => RefusedStream.some
+    case Cancel.value => Cancel.some
+    case CompressionError.value => CompressionError.some
+    case ConnectError.value => ConnectError.some
+    case EnhanceYourCalm.value => EnhanceYourCalm.some
+    case InadequateSecurity.value => InadequateSecurity.some
+    case Http_1_1_Required.value => Http_1_1_Required.some
+    case _ => None
+  }
 
   /*
     The associated condition is not a result of an

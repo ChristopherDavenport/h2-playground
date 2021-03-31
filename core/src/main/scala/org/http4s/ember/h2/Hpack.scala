@@ -4,6 +4,12 @@ import cats.effect._
 import cats.effect.std._
 import cats.syntax.all._
 import scodec.bits._
+import java.io.InputStream
+import java.io.ByteArrayInputStream
+import java.io.ByteArrayOutputStream
+import com.twitter.hpack.HeaderListener
+import java.nio.charset.StandardCharsets
+import scala.collection.mutable.ListBuffer
 
 trait Hpack[F[_]]{
   def encodeHeaders(headers: List[(String, String, Boolean)]): F[ByteVector]
@@ -26,9 +32,36 @@ object Hpack {
     tDecoder: com.twitter.hpack.Decoder
   ) extends Hpack[F]{
     def encodeHeaders(headers: List[(String, String, Boolean)]): F[ByteVector] = 
-      encodeLock.permit.use(_ => Encoder.encodeHeaders[F](tEncoder, headers))
+      encodeLock.permit.use(_ => Hpack.encodeHeaders[F](tEncoder, headers))
     def decodeHeaders(bv: ByteVector): F[List[(String, String)]] = 
-      decodeLock.permit.use(_ => Decoder.decodeHeaders[F](tDecoder,bv))
+      decodeLock.permit.use(_ => Hpack.decodeHeaders[F](tDecoder,bv))
 
+  }
+
+  def decodeHeaders[F[_]: Sync](tDecoder: com.twitter.hpack.Decoder, bv: ByteVector): F[List[(String, String)]] = Sync[F].delay{
+    var buffer = new ListBuffer[(String, String)]
+    val is = new ByteArrayInputStream(bv.toArray)
+    val listener = new HeaderListener{
+      def addHeader(name: Array[Byte], value: Array[Byte], sensitive: Boolean): Unit = {
+        buffer.addOne(
+          new String(name, StandardCharsets.ISO_8859_1) -> new String(value, StandardCharsets.ISO_8859_1)
+        )
+      }
+    }
+
+    tDecoder.decode(is, listener)
+    tDecoder.endHeaderBlock()
+
+    val decoded = buffer.toList
+    // println(s"Decoded: $decoded")
+    decoded
+  }
+
+  def encodeHeaders[F[_]: Sync](tEncoder: com.twitter.hpack.Encoder, headers: List[(String, String, Boolean)]): F[ByteVector] = Sync[F].delay{
+    val os = new ByteArrayOutputStream(1024)
+    headers.foreach{ h => 
+      tEncoder.encodeHeader(os, h._1.getBytes(StandardCharsets.ISO_8859_1), h._2.getBytes(StandardCharsets.ISO_8859_1), h._3)
+    }
+    ByteVector.view(os.toByteArray())
   }
 }
