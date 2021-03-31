@@ -8,7 +8,7 @@ import scala.collection.mutable.ListBuffer
 import org.http4s._
 import fs2._
 import cats._
-import cats.effect.{ApplicativeThrow => _, _}
+import cats.effect._
 import cats.syntax.all._
 import org.http4s.ember.h2.Frame.Continuation
 import org.http4s.ember.h2.Frame.PushPromise
@@ -37,7 +37,9 @@ object Decoder {
     tDecoder.decode(is, listener)
     tDecoder.endHeaderBlock()
 
-    buffer.toList
+    val decoded = buffer.toList
+    println(s"Decoded: $decoded")
+    decoded
   }
 
 

@@ -398,6 +398,24 @@ object Frame {
   object Settings {
     val `type`: Byte = 0x4
     val Ack = Settings(0x0, true, Nil)
+    case class ConnectionSettings(
+      tableSize: SettingsHeaderTableSize,
+      enablePush: SettingsEnablePush,
+      maxConcurrentStreams: SettingsMaxConcurrentStreams,
+      initialWindowSize: SettingsInitialWindowSize,
+      maxFrameSize: SettingsMaxFrameSize,
+      maxHeaderListSize: Option[SettingsMaxHeaderListSize]
+    )
+    object ConnectionSettings {
+      val default = ConnectionSettings(
+        tableSize = SettingsHeaderTableSize(4096),
+        enablePush = SettingsEnablePush(true),
+        maxConcurrentStreams = SettingsMaxConcurrentStreams(1024),
+        initialWindowSize = SettingsInitialWindowSize(65535),
+        maxFrameSize = SettingsMaxFrameSize(16384),
+        maxHeaderListSize = None
+      )
+    }
 
     // Effect?
     def fromRaw(raw: RawFrame): Option[Settings] = {

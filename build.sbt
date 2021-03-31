@@ -60,10 +60,10 @@ ThisBuild / githubWorkflowPublish := Seq(
 
 
 val catsV = "2.4.2"
-val catsEffectV = "3.0.0-RC2"
+val catsEffectV = "3.0.0"
 // val shapelessV = "2.3.3"
-val fs2V = "3.0.0-M9"
-val http4sV = "1.0.0-M19"
+val fs2V = "3.0.0"
+val http4sV = "1.0.0-M20"
 
 val munitCatsEffectV = "0.13.1"
 // val specs2V = "4.10.6"
@@ -154,7 +154,7 @@ lazy val commonSettings = Seq(
     "org.http4s"                  %% "http4s-dsl"                 % http4sV,
     "org.http4s"                  %% "http4s-ember-server"        % http4sV,
     "org.http4s"                  %% "http4s-ember-client"        % http4sV,
-        "com.twitter"                 % "hpack"                       % "1.0.2",
+    "com.twitter"                 % "hpack"                       % "1.0.2",
 
     "org.typelevel"               %%% "munit-cats-effect-3"        % munitCatsEffectV         % Test,
 
