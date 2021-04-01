@@ -82,7 +82,7 @@ class H2Client[F[_]: Async](
       _ <- Resource.eval(tlsSocket.write(Chunk.empty))
       _ <- Resource.eval(tlsSocket.applicationProtocol).evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, 1)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.remoteInitialWindowSize.windowSize, Frame.Settings.ConnectionSettings.default.localInitialWindowSize.windowSize, 1)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])

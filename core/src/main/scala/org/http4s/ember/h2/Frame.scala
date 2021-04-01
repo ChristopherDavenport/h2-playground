@@ -420,7 +420,7 @@ object Frame {
         case (base, setting: SettingsMaxConcurrentStreams) => 
           base.copy(maxConcurrentStreams = setting)
         case (base, setting: SettingsInitialWindowSize) => 
-          base.copy(initialWindowSize = setting)
+          base.copy(remoteInitialWindowSize = setting)
         case (base, setting: SettingsMaxFrameSize) => 
           base.copy(maxFrameSize = setting)
         case (base, setting: SettingsMaxHeaderListSize) => 
@@ -433,7 +433,8 @@ object Frame {
       tableSize: SettingsHeaderTableSize,
       enablePush: SettingsEnablePush,
       maxConcurrentStreams: SettingsMaxConcurrentStreams,
-      initialWindowSize: SettingsInitialWindowSize,
+      localInitialWindowSize: SettingsInitialWindowSize,
+      remoteInitialWindowSize: SettingsInitialWindowSize,
       maxFrameSize: SettingsMaxFrameSize,
       maxHeaderListSize: Option[SettingsMaxHeaderListSize]
     )
@@ -442,7 +443,8 @@ object Frame {
         tableSize = SettingsHeaderTableSize(4096),
         enablePush = SettingsEnablePush(true),
         maxConcurrentStreams = SettingsMaxConcurrentStreams(1024),
-        initialWindowSize = SettingsInitialWindowSize(65535),
+        localInitialWindowSize = SettingsInitialWindowSize(65535),
+        remoteInitialWindowSize = SettingsInitialWindowSize(65535),
         maxFrameSize = SettingsMaxFrameSize(16384),
         maxHeaderListSize = None
       )
@@ -600,6 +602,7 @@ object Frame {
   case class Ping(identifier: Int, ack: Boolean, data: Option[ByteVector]) extends Frame{
     override def toString: String = 
       if (identifier == 0 && ack) "Ping.Ack"
+      else if (identifier == 0 && !ack) "Ping"
       else s"Ping(identifier=$identifier, ack=$ack, data=$data)"
   }// Always exactly 8 bytes
   object Ping {

@@ -25,12 +25,11 @@ class H2Connection[F[_]: Concurrent](
 
   def initiateStreamById(id: Int): F[H2Stream[F]] = for {
     settings <- state.get.map(_.settings)
-    readBlock <- Deferred[F, Either[Throwable, Unit]]
     writeBlock <- Deferred[F, Either[Throwable, Unit]]
     headers <- Deferred[F, Either[Throwable, List[(String, String)]]]
-    body <- cats.effect.std.Queue.unbounded[F, ByteVector]
-    refState <- SignallingRef.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, settings.initialWindowSize.windowSize, headers, body)
+    body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
+    refState <- Ref.of[F, H2Stream.State[F]](
+      H2Stream.State(StreamState.Idle, settings.remoteInitialWindowSize.windowSize, writeBlock, settings.localInitialWindowSize.windowSize, headers, body)
     )
   } yield new H2Stream(id, state.get.map(_.settings), refState, hpack, outgoing)
 
@@ -47,7 +46,7 @@ class H2Connection[F[_]: Concurrent](
       .evalMap{chunk => 
         val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
         socket.isOpen.ifM(
-          socket.write(Chunk.byteVector(bv)), // TODO regroup if that wasn't the issue
+          socket.write(Chunk.byteVector(bv)),
           new Throwable("Socket Closed when attempting to write").raiseError
         )
         
@@ -84,7 +83,10 @@ class H2Connection[F[_]: Concurrent](
       .debug(formatter = {c => s"Connection $host:$port Read- $c"})
       .evalTap{
         case settings@Frame.Settings(0,false, _) => 
-          state.update(s => s.copy(settings = Frame.Settings.updateSettings(settings, s.settings))) >>
+          state.modify{s => 
+            val newSettings = Frame.Settings.updateSettings(settings, s.settings)
+            (s.copy(settings = newSettings), newSettings)
+          }.map(settings => println(s"Connection $host:$port Settings- $settings")) >> // TODO cheating
           outgoing.offer(Frame.Settings(0, true, List.empty) :: Nil) >> // Ack
           settingsAck.complete(Either.right(())).void
         case Frame.Settings(0, true, _) => Applicative[F].unit
@@ -92,12 +94,15 @@ class H2Connection[F[_]: Concurrent](
           state.get.flatMap{s =>  
             outgoing.offer(Frame.GoAway(0, s.highestStreamInitiated, H2Error.ProtocolError.value, None) :: Nil)
           }
-        case Frame.GoAway(_, _,_,_) => Applicative[F].unit
+        case g@Frame.GoAway(_, _,_,_) => mapRef.get.flatMap{ m => 
+          m.values.toList.traverse_(connection => connection.receiveGoAway(g))
+        }
         case Frame.Ping(_, _, _) => Applicative[F].unit
 
-        case w@Frame.WindowUpdate(i, _) => 
+        case w@Frame.WindowUpdate(i, size) => 
           i match {
-            case 0 => ???
+            case 0 => 
+              state.update(s => s.copy(writeWindow = s.writeWindow + size))
             case otherwise => 
               mapRef.get.map(_.get(otherwise)).flatMap{
                 case Some(s) => 
@@ -120,13 +125,27 @@ class H2Connection[F[_]: Concurrent](
         case d@Frame.Data(i, _, _, _) => 
           mapRef.get.map(_.get(i)).flatMap{
             case Some(s) => 
-              s.receiveData(d)
+              for {
+                st <- state.get
+                newSize = st.readWindow - d.data.size.toInt
+                needsWindowUpdate = (newSize <= (st.settings.localInitialWindowSize.windowSize / 2))
+                _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) st.settings.localInitialWindowSize.windowSize else newSize.toInt))
+                _ <- s.receiveData(d)
+                _ <- if (needsWindowUpdate) outgoing.offer(Frame.WindowUpdate(0, st.settings.localInitialWindowSize.windowSize - newSize.toInt):: Nil) else Applicative[F].unit
+              } yield ()
             case None => 
-              println(s"No Stream Exists... $i")
+              println(s"Data: No Stream Exists... $i")
               Applicative[F].unit
           }
         case Frame.Continuation(_, _, _) => Applicative[F].unit
-        case Frame.RstStream(_, _) => Applicative[F].unit
+        case rst@Frame.RstStream(i, _) => 
+          mapRef.get.map(_.get(i)).flatMap{
+            case Some(s) => 
+              s.receiveRstStream(rst)
+            case None => 
+              println(s"RstStream No Stream Exists... $i")
+              Applicative[F].unit
+          }
 
         case Frame.PushPromise(_, _, _, _, _) => Applicative[F].unit
         case Frame.Priority(_, _, _, _) => Applicative[F].unit
@@ -136,7 +155,7 @@ class H2Connection[F[_]: Concurrent](
 }
 
 object H2Connection {
-  case class State(settings: Frame.Settings.ConnectionSettings, highestStreamInitiated: Int)
+  case class State(settings: Frame.Settings.ConnectionSettings, writeWindow: Int, readWindow: Int, highestStreamInitiated: Int)
   // sealed trait ConnectionType
   // object ConnectionType {
   //   case object Server extends ConnectionType

@@ -13,7 +13,7 @@ import scodec.bits._
 class H2Stream[F[_]: Concurrent](
   val id: Int,
   val currentConnectionSettings: F[Frame.Settings.ConnectionSettings],
-  val state: SignallingRef[F, H2Stream.State[F]],
+  val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
   val enqueue: cats.effect.std.Queue[F, List[Frame]]
 ){
@@ -62,21 +62,24 @@ class H2Stream[F[_]: Concurrent](
   def receiveHeaders(headers: Frame.Headers, continuations: Frame.Continuation*): F[Unit] = state.get.flatMap{
     s => 
     s.state match {
-      case StreamState.Open | StreamState.HalfClosedLocal => 
+      case StreamState.Open | StreamState.HalfClosedLocal | StreamState.Idle => 
         for {
           l <- hpack.decodeHeaders(headers.headerBlock)
           others <- continuations.toList.flatTraverse(c => hpack.decodeHeaders(c.headerBlockFragment))
           h = l ::: others
           newstate = if (headers.endStream) s.state match {
-            case StreamState.Open => StreamState.HalfClosedRemote
-            case StreamState.HalfClosedLocal => StreamState.Closed
+            case StreamState.Open => StreamState.HalfClosedRemote // Client
+            case StreamState.Idle => StreamState.HalfClosedRemote // Server
+            case StreamState.HalfClosedLocal => StreamState.Closed // Client
             case s => s
-          } else s.state
+          } else s.state match {
+            case StreamState.Idle => StreamState.Open // Server
+            case s => s
+          }
           headers <- state.modify(s => 
             (s.copy(state = newstate), s.readHeaders)//, readHeaders = l ::: others ::: s.readHeaders))
           )
           _ <- headers.complete(Either.right(h))
-
         } yield ()
       case _ => ???
     }
@@ -92,20 +95,40 @@ class H2Stream[F[_]: Concurrent](
           case StreamState.HalfClosedLocal => StreamState.Closed
           case s => s
         } else s.state
-        for {
-          
-          _ <- state.update(s => 
-            s.copy(state = newState, readWindow = newSize)
-          )
-          _ <- s.readBuffer.offer(data.data)
 
-          _ <- enqueue.offer(Frame.WindowUpdate(id, data.data.size.toInt) :: Frame.WindowUpdate(0, data.data.size.toInt) :: Nil)
+        for {
+          settings <- currentConnectionSettings
+          needsWindowUpdate = (newSize <= (settings.localInitialWindowSize.windowSize / 2))
+          _ <- state.update(s => 
+            s.copy(state = newState, readWindow = if (needsWindowUpdate) settings.localInitialWindowSize.windowSize else newSize)
+          )
+          _ <- s.readBuffer.offer(Either.right(data.data))
+          _ <- if (needsWindowUpdate) enqueue.offer(Frame.WindowUpdate(id, settings.localInitialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
         } yield ()
       case otherwise =>
         println(s"Unexpected: $s - $data")
         Applicative[F].unit
     }
   }
+
+  // Broadcast Frame
+  // Will eventually allow us to know we can retry if we are above the processed window declared
+  def receiveGoAway(goAway: Frame.GoAway): F[Unit] = for {
+    s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
+    t = new Throwable(s"Received GoAway, cancelling: $goAway")
+    _ <- s.writeBlock.complete(Left(t))
+    _ <- s.readHeaders.complete(Left(t))
+    _ <- s.readBuffer.offer(Left(t))
+  } yield ()
+
+  def receiveRstStream(rst: Frame.RstStream): F[Unit] = for {
+    s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
+    t = new Throwable(s"Received RstStream, cancelling: $rst")
+    _ <- s.writeBlock.complete(Left(t))
+    _ <- s.readHeaders.complete(Left(t))
+    _ <- s.readBuffer.offer(Left(t))
+
+  } yield ()
 
   
 
@@ -125,16 +148,21 @@ class H2Stream[F[_]: Concurrent](
           val closed = (state.state == StreamState.HalfClosedRemote || state.state == StreamState.Closed)
           if (closed) {
             def p2: Pull[F, Byte, Unit] = Pull.eval(state.readBuffer.tryTake).flatMap{
-              case Some(s) => Pull.output(Chunk.byteVector(s)) >> p2
+              case Some(Right(s)) => Pull.output(Chunk.byteVector(s)) >> p2
+              case Some(Left(e)) => Pull.raiseError(e)
               case None => Pull.done
             }
             p2
           } else {
             def p2: Pull[F, Byte, Unit] = Pull.eval(state.readBuffer.tryTake).flatMap{
-              case Some(s) => Pull.output(Chunk.byteVector(s)) >> p2
+              case Some(Right(s)) => Pull.output(Chunk.byteVector(s)) >> p2
+              case Some(Left(e)) => Pull.raiseError(e)
               case None => p
             }
-            Pull.eval(state.readBuffer.take).flatMap(b => Pull.output(Chunk.byteVector(b))) >> p2
+            Pull.eval(state.readBuffer.take).flatMap{
+              case Right(b) => Pull.output(Chunk.byteVector(b))
+              case Left(e) => Pull.raiseError(e)
+            } >> p2
           }
       }
     p.stream
@@ -143,5 +171,5 @@ class H2Stream[F[_]: Concurrent](
 }
 
 object H2Stream {
-  case class State[F[_]](state: StreamState, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, readHeaders: Deferred[F, Either[Throwable, List[(String, String)]]],  readBuffer: cats.effect.std.Queue[F, ByteVector])
+  case class State[F[_]](state: StreamState, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, readHeaders: Deferred[F, Either[Throwable, List[(String, String)]]],  readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]])
 }
