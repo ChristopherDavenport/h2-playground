@@ -50,11 +50,13 @@ class H2Stream[F[_]: Concurrent](
             )
           }
         } else {
-          s.writeBlock.get.rethrow >> sendData(bv, endStream)
+          val head = bv.take(s.writeWindow)
+          val tail = bv.drop(s.writeWindow)
+          enqueue.offer(Frame.Data(id, head, None, false):: Nil) >> 
+          s.writeBlock.get.rethrow >> sendData(tail, endStream)
         }  
       case _ => ???
     }
-
   }
 
   

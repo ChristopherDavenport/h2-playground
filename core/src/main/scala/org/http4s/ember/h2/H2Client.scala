@@ -48,6 +48,7 @@ class H2Client[F[_]: Async](
   sg: SocketGroup[F],
   // network: Network[F],
   tls: TLSContext[F],
+  streamCreateAndHeaders: Resource[F, Unit], 
   connections: Ref[F, Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]]
 ){
   import org.http4s._
@@ -82,7 +83,8 @@ class H2Client[F[_]: Async](
       _ <- Resource.eval(tlsSocket.write(Chunk.empty))
       _ <- Resource.eval(tlsSocket.applicationProtocol).evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.remoteInitialWindowSize.windowSize, Frame.Settings.ConnectionSettings.default.localInitialWindowSize.windowSize, 1)))
+      initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.remoteInitialWindowSize.windowSize, initialWriteBlock, Frame.Settings.ConnectionSettings.default.localInitialWindowSize.windowSize, 1)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
@@ -114,18 +116,20 @@ class H2Client[F[_]: Async](
 
     for {
       connection <- Resource.eval(getOrCreate(host, port))
-      stream <- Resource.eval(connection.initiateStream)
-      _ <- Resource.eval(connection.mapRef.update(m => m.+(stream.id -> stream)))
-      _ <- Resource.eval(stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false))
+      // Stream Order Must Be Correct. So 
+      stream <- Resource.eval(streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream => 
+        stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
+      )))
+      _ <- Resource.make(connection.mapRef.update(m => m.+(stream.id -> stream)))(_ => connection.mapRef.update(m => m - stream.id))
       _ <- (
         req.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)) ++
         Stream.eval(stream.sendData(ByteVector.empty, true))
       ).compile.drain.background
       headers <- Resource.eval(stream.getHeaders)
       resp = PseudoHeaders.headersToResponseNoBody(headers).get // TODO fix
-      contentLength = resp.contentLength
-      cutAtcontentLength = {(s: Stream[F, Byte]) => contentLength.fold(s)(l => s.take(l))}
-    } yield resp.covary[F].withBodyStream(cutAtcontentLength(stream.readBody))
+      // contentLength = resp.contentLength
+      // cutAtcontentLength = {(s: Stream[F, Byte]) => contentLength.fold(s)(l => s.take(l))}
+    } yield resp.covary[F].withBodyStream(stream.readBody )
   }
 }
 
@@ -133,9 +137,10 @@ object H2Client {
   def impl[F[_]: Async]: Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()
-      tlsContext <- Resource.eval(Network[F].tlsContext.system)
+      tlsContext <- Resource.eval(Network[F].tlsContext.system) // TODO
+      sem <- Resource.eval(cats.effect.std.Semaphore[F](1))
       map <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
-      h2 = new H2Client(sg, tlsContext, map)
+      h2 = new H2Client(sg, tlsContext, sem.permit, map)
     } yield org.http4s.client.Client(h2.run)
   }
 }

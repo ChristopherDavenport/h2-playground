@@ -37,13 +37,14 @@ object Test {
         uri = uri"https://en.wikipedia.org/wiki/HTTP/2"
         // uri = uri"https://twitter.com/"
         // uri = uri"https://banno.com/"
+        // uri = uri"https://http2.golang.org/reqinfo"
       ))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
         .use(_.body.compile.drain)
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled
-        p >> (p,p).parTupled >>
-        Temporal[F].sleep(10.second) >> 
-        p
+        (p,p, p, p).parTupled
+        // Temporal[F].sleep(10.second) >> 
+        // p
         // List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
     }
   }

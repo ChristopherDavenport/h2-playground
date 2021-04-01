@@ -12,7 +12,7 @@ class H2Connection[F[_]: Concurrent](
   host: com.comcast.ip4s.Host,
   port: com.comcast.ip4s.Port,
   val mapRef: Ref[F, Map[Int, H2Stream[F]]],
-  state: Ref[F, H2Connection.State], // odd if client, even if server
+  state: Ref[F, H2Connection.State[F]], // odd if client, even if server
   val outgoing: cats.effect.std.Queue[F, List[Frame]],
   hpack: Hpack[F],
   val settingsAck: Deferred[F, Either[Throwable, Unit]],
@@ -50,7 +50,7 @@ class H2Connection[F[_]: Concurrent](
           new Throwable("Socket Closed when attempting to write").raiseError
         )
         
-      }.drain ++ writeLoop
+      }.repeat.drain // TODO Split Frames between Data and Others Hold Data If we are approaching cap
 
   def readLoop: Stream[F, Nothing] = {
     def p(acc: ByteVector): Pull[F, Frame, Unit] = {
@@ -102,7 +102,11 @@ class H2Connection[F[_]: Concurrent](
         case w@Frame.WindowUpdate(i, size) => 
           i match {
             case 0 => 
-              state.update(s => s.copy(writeWindow = s.writeWindow + size))
+              for {
+                newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
+                oldWriteBlock <- state.modify(s => (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + size), s.writeBlock))
+                _ <- oldWriteBlock.complete(Right(()))
+              } yield ()
             case otherwise => 
               mapRef.get.map(_.get(otherwise)).flatMap{
                 case Some(s) => 
@@ -119,9 +123,12 @@ class H2Connection[F[_]: Concurrent](
             case Some(s) => 
               s.receiveHeaders(h)
             case None => 
-              println(s"No Stream Exists... $i")
+              // initiateStreamById(i)
+              // println(s"No Stream Exists... $i")
               Applicative[F].unit
           }
+        case Frame.Continuation(_, _, _) => Applicative[F].unit // TODO header regions need to be identified and chained
+        
         case d@Frame.Data(i, _, _, _) => 
           mapRef.get.map(_.get(i)).flatMap{
             case Some(s) => 
@@ -137,7 +144,6 @@ class H2Connection[F[_]: Concurrent](
               println(s"Data: No Stream Exists... $i")
               Applicative[F].unit
           }
-        case Frame.Continuation(_, _, _) => Applicative[F].unit
         case rst@Frame.RstStream(i, _) => 
           mapRef.get.map(_.get(i)).flatMap{
             case Some(s) => 
@@ -147,15 +153,17 @@ class H2Connection[F[_]: Concurrent](
               Applicative[F].unit
           }
 
-        case Frame.PushPromise(_, _, _, _, _) => Applicative[F].unit
-        case Frame.Priority(_, _, _, _) => Applicative[F].unit
-      }.drain
+        case Frame.PushPromise(_, _, _, _, _) => Applicative[F].unit // TODO Implement Push Promise Flow
+        case Frame.Priority(_, _, _, _) => Applicative[F].unit // We Do Nothing with these presently
+      }.drain.onError{
+        case e => Stream.eval(Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e")))
+      }
 
 
 }
 
 object H2Connection {
-  case class State(settings: Frame.Settings.ConnectionSettings, writeWindow: Int, readWindow: Int, highestStreamInitiated: Int)
+  case class State[F[_]](settings: Frame.Settings.ConnectionSettings, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, highestStreamInitiated: Int)
   // sealed trait ConnectionType
   // object ConnectionType {
   //   case object Server extends ConnectionType
