@@ -76,11 +76,10 @@ class H2Client[F[_]: Async](
   def createConnection(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port): F[(H2Connection[F], F[Unit])] = {
     val r = for {
       baseSocket <- sg.client(SocketAddress(host, port))
-      tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
-        println(s"t: $t, l: $l")
+      tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
         l.find(_ === "h2").getOrElse("http/1.1")
-        // "h2"
       }.some), None)
+      _ <- Resource.eval(tlsSocket.write(Chunk.empty))
       _ <- Resource.eval(tlsSocket.applicationProtocol).evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, 1)))

@@ -14,6 +14,7 @@ import fs2.io.net._
 import fs2.io.net.tls._
 import com.comcast.ip4s._
 
+import org.typelevel.ci.CIString
 import scala.concurrent.duration._
 
 object Main extends IOApp {
@@ -31,11 +32,12 @@ object Test {
     H2Client.impl[F].use{ c => 
       val p = c.run(org.http4s.Request[F](
         org.http4s.Method.GET, 
-        uri = org.http4s.Uri.unsafeFromString("https://twitter.com/"))) 
+        uri = org.http4s.Uri.unsafeFromString("https://en.wikipedia.org/wiki/HTTP/2")
+      ))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
         .use(_.body.compile.drain)
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
-        (p,  p, p).parTupled
-
+        // (p,  p, p).parTupled
+        p //>> p
     }
   }
 }

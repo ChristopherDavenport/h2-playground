@@ -371,7 +371,9 @@ object Frame {
   case class RstStream(
     identifier: Int, 
     value: Integer
-  ) extends Frame
+  ) extends Frame{
+    override def toString = s"RstStream(identifier=$identifier, value=${H2Error.fromInt(value).getOrElse(value)})"
+  }
   object RstStream {
     val `type`: Byte = 0x3
 
@@ -399,7 +401,12 @@ object Frame {
     identifier: Int,
     ack: Boolean,
     list: List[Settings.Setting]
-  ) extends Frame
+  ) extends Frame {
+    override def toString: String = 
+      if (identifier == 0 && ack && list.isEmpty) "Settings.Ack"
+      else if (identifier == 0 && !ack) s"Settings(${list.map(_.toString).intercalate(", ")})"
+      else s"Settings(identifier=$identifier, ack=$ack, list=$list)"
+  }
   object Settings {
     val `type`: Byte = 0x4
     val Ack = Settings(0x0, true, Nil)
@@ -590,7 +597,11 @@ object Frame {
     |                                                               |
     +---------------------------------------------------------------+
   */
-  case class Ping(identifier: Int, ack: Boolean, data: Option[ByteVector]) extends Frame// Always exactly 8 bytes
+  case class Ping(identifier: Int, ack: Boolean, data: Option[ByteVector]) extends Frame{
+    override def toString: String = 
+      if (identifier == 0 && ack) "Ping.Ack"
+      else s"Ping(identifier=$identifier, ack=$ack, data=$data)"
+  }// Always exactly 8 bytes
   object Ping {
     val `type`: Byte = 0x6
 

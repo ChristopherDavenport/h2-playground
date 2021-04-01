@@ -42,12 +42,15 @@ class H2Connection[F[_]: Concurrent](
       .unNone
     )
       .flatMap(l => Stream.emits(l))
+      .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .chunkMin(1024, true)
-      // .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .evalMap{chunk => 
         val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
-        // socket.isOpen
-        socket.write(Chunk.byteVector(bv)) // TODO regroup if that wasn't the issue
+        socket.isOpen.ifM(
+          socket.write(Chunk.byteVector(bv)), // TODO regroup if that wasn't the issue
+          new Throwable("Socket Closed when attempting to write").raiseError
+        )
+        
       }.drain ++ writeLoop
 
   def readLoop: Stream[F, Nothing] = {
@@ -78,7 +81,7 @@ class H2Connection[F[_]: Concurrent](
     }
     p(ByteVector.empty).stream
   }
-      // .debug(formatter = {c => s"Connection $host:$port Read- $c"})
+      .debug(formatter = {c => s"Connection $host:$port Read- $c"})
       .evalTap{
         case settings@Frame.Settings(0,false, _) => 
           state.update(s => s.copy(settings = Frame.Settings.updateSettings(settings, s.settings))) >>
