@@ -48,7 +48,6 @@ class H2Client[F[_]: Async](
   sg: SocketGroup[F],
   // network: Network[F],
   tls: TLSContext[F],
-  streamCreateAndHeaders: Resource[F, Unit], 
   connections: Ref[F, Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]]
 ){
   import org.http4s._
@@ -88,7 +87,8 @@ class H2Client[F[_]: Async](
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      h2 = new H2Connection(host, port, ref, stateRef, queue, hpack, settingsAck, tlsSocket)
+      streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
+      h2 = new H2Connection(host, port, ref, stateRef, queue, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
       bgRead <- h2.readLoop.compile.drain.background
       bgWrite <- h2.writeLoop.compile.drain.background
       _ <- Stream.awakeDelay(10.seconds).evalMap(_ => h2.outgoing.offer(Frame.Ping(0, false, None) :: Nil)).compile.drain.background
@@ -117,7 +117,7 @@ class H2Client[F[_]: Async](
     for {
       connection <- Resource.eval(getOrCreate(host, port))
       // Stream Order Must Be Correct. So 
-      stream <- Resource.eval(streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream => 
+      stream <- Resource.eval(connection.streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream => 
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
       )))
       _ <- Resource.make(connection.mapRef.update(m => m.+(stream.id -> stream)))(_ => connection.mapRef.update(m => m - stream.id))
@@ -138,9 +138,9 @@ object H2Client {
     for {
       sg <- Network[F].socketGroup()
       tlsContext <- Resource.eval(Network[F].tlsContext.system) // TODO
-      sem <- Resource.eval(cats.effect.std.Semaphore[F](1))
+      // sem <- Resource.eval(cats.effect.std.Semaphore[F](1))
       map <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
-      h2 = new H2Client(sg, tlsContext, sem.permit, map)
+      h2 = new H2Client(sg, tlsContext, map)
     } yield org.http4s.client.Client(h2.run)
   }
 }

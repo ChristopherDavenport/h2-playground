@@ -15,6 +15,7 @@ class H2Connection[F[_]: Concurrent](
   state: Ref[F, H2Connection.State[F]], // odd if client, even if server
   val outgoing: cats.effect.std.Queue[F, List[Frame]],
   hpack: Hpack[F],
+  val streamCreateAndHeaders: Resource[F, Unit], 
   val settingsAck: Deferred[F, Either[Throwable, Unit]],
   socket: Socket[F],
 ){

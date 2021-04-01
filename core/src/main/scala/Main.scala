@@ -42,10 +42,10 @@ object Test {
         .use(_.body.compile.drain)
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled
-        (p,p, p, p).parTupled
+        // (p,p, p, p).parTupled
         // Temporal[F].sleep(10.second) >> 
         // p
-        // List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
+        List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
     }
   }
 }
