@@ -14,7 +14,6 @@ object PseudoHeaders {
     METHOD, SCHEME, PATH, AUTHORITY
   )
 
-
   import org.http4s.Request
   def requestToHeaders[F[_]](req: Request[F]): List[(String, String, Boolean)] = {
     val path = {
@@ -31,7 +30,7 @@ object PseudoHeaders {
     l
   }
 
-  def headersToRequest(headers: List[(String, String)]): Option[Request[fs2.Pure]] = {
+  def headersToRequestNoBody(headers: List[(String, String)]): Option[Request[fs2.Pure]] = {
     val method = headers.find(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
     val scheme = headers.find(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
     val path = headers.find(_._1 === PATH).map(_._2)
@@ -52,7 +51,7 @@ object PseudoHeaders {
       case (PseudoHeaders.AUTHORITY, value) => 
         val index = value.indexOf(":")
         if (index > 0 && index < value.length) {
-          Option(Uri.Authority(userInfo = None, host = Uri.RegName(value.take(index - 1)), port = value.drop(index).toInt.some))
+          Option(Uri.Authority(userInfo = None, host = Uri.RegName(value.take(index)), port = value.drop(index + 1).toInt.some))
         } else Option.empty
       case (_, _) => None
     }
@@ -60,6 +59,11 @@ object PseudoHeaders {
 
   // Response pseudo header
   val STATUS = ":status"
+
+  def responseToHeaders[F[_]](response: Response[F]): List[(String, String, Boolean)] = {
+    (STATUS, response.status.code.toString, false) ::
+    response.headers.headers.map(raw => (raw.name.toString, raw.value, org.http4s.Headers.SensitiveHeaders.contains(raw.name)))
+  }
 
   def headersToResponseNoBody(headers: List[(String, String)]): Option[Response[fs2.Pure]] = {
     val status = headers.collectFirstSome{
@@ -74,7 +78,5 @@ object PseudoHeaders {
     status.map(s => 
       Response(status = s, httpVersion = HttpVersion.`HTTP/2.0`, headers = h)
     )
-
-    
   }
 }

@@ -16,7 +16,8 @@ class H2Stream[F[_]: Concurrent](
   val remoteSettings: F[Frame.Settings.ConnectionSettings],
   val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
-  val enqueue: cats.effect.std.Queue[F, List[Frame]]
+  val enqueue: cats.effect.std.Queue[F, List[Frame]],
+  val onClosed: F[Unit]
 ){
 
 
@@ -24,11 +25,25 @@ class H2Stream[F[_]: Concurrent](
   def sendHeaders(headers: List[(String, String, Boolean)], endStream: Boolean): F[Unit] = 
     state.get.flatMap{ s => 
       s.state match {
-        case StreamState.Idle  => 
+        case StreamState.Idle | StreamState.HalfClosedRemote | StreamState.Open  => 
           hpack.encodeHeaders(headers).map(bv => 
             Frame.Headers(id, None, endStream, true, bv, None)
-          ).flatMap(f => enqueue.offer(f:: Nil)) <* state.update(b => b.copy(state = if (endStream) StreamState.HalfClosedLocal else StreamState.Open))
-        case _ => ???
+          ).flatMap(f => enqueue.offer(f:: Nil)) <* 
+            state.modify{b => 
+              val newState: StreamState = (b.state, endStream) match {
+                case (StreamState.Idle, false) => StreamState.Open
+                case (StreamState.Idle, true) => StreamState.HalfClosedLocal
+                case (StreamState.HalfClosedRemote, false) => StreamState.HalfClosedRemote
+                case (StreamState.HalfClosedRemote, true) => StreamState.Closed
+                case (StreamState.Open, false) => StreamState.Open
+                case (StreamState.Open, true) => StreamState.HalfClosedLocal
+                case (s, _) => s // Hopefully Impossible
+              }
+              (b.copy(state = newState), newState)
+            }.flatMap{state =>
+              if (state == StreamState.Closed) onClosed else Applicative[F].unit
+            }.void
+        case _ => ??? // Ruh-roh
       }
     }
     
@@ -37,17 +52,23 @@ class H2Stream[F[_]: Concurrent](
       case StreamState.Open | StreamState.HalfClosedRemote => 
         if (bv.size.toInt <= s.writeWindow){ 
           enqueue.offer(Frame.Data(id, bv, None, endStream):: Nil) >> {
-            state.update(s => 
-              s.copy(
-                state = {if (endStream) {
+            state.modify{s => 
+              val newState = if (endStream) {
                   s.state match {
                     case StreamState.Open => StreamState.HalfClosedLocal
                     case StreamState.HalfClosedRemote => StreamState.Closed
                     case state => state // Ruh-roh
                   }
-                } else s.state},
+                } else s.state
+              (
+              s.copy(
+                state = newState,
                 writeWindow = {s.writeWindow - bv.size.toInt},
+              ),
+              newState
               )
+            }.flatMap( state => 
+              if (state == StreamState.Closed) onClosed else Applicative[F].unit
             )
           }
         } else {
@@ -82,7 +103,9 @@ class H2Stream[F[_]: Concurrent](
           headers <- state.modify(s => 
             (s.copy(state = newstate), s.readHeaders)//, readHeaders = l ::: others ::: s.readHeaders))
           )
+          // _ = println(s"headers $headers")
           _ <- headers.complete(Either.right(h))
+          _ <- if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
         } yield ()
       case _ => ???
     }
@@ -98,6 +121,7 @@ class H2Stream[F[_]: Concurrent](
           case StreamState.HalfClosedLocal => StreamState.Closed
           case s => s
         } else s.state
+        val isClosed = newState == StreamState.Closed
 
         val needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
         // println(s"s: $id , newSize: $newSize, needsWindowUpdate: $needsWindowUpdate")
@@ -107,7 +131,9 @@ class H2Stream[F[_]: Concurrent](
             s.copy(state = newState, readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize)
           )
           _ <- s.readBuffer.offer(Either.right(data.data))
-          _ <- if (needsWindowUpdate) enqueue.offer(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
+
+          _ <- if (needsWindowUpdate && !isClosed) enqueue.offer(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
+          _ <- if (isClosed) onClosed else Applicative[F].unit
         } yield ()
       case otherwise =>
         println(s"Unexpected: $s - $data")
@@ -123,6 +149,7 @@ class H2Stream[F[_]: Concurrent](
     _ <- s.writeBlock.complete(Left(t))
     _ <- s.readHeaders.complete(Left(t))
     _ <- s.readBuffer.offer(Left(t))
+    _ <- onClosed
   } yield ()
 
   def receiveRstStream(rst: Frame.RstStream): F[Unit] = for {
@@ -131,7 +158,7 @@ class H2Stream[F[_]: Concurrent](
     _ <- s.writeBlock.complete(Left(t))
     _ <- s.readHeaders.complete(Left(t))
     _ <- s.readBuffer.offer(Left(t))
-
+    _ <- onClosed
   } yield ()
 
   

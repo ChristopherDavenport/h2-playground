@@ -90,7 +90,10 @@ class H2Client[F[_]: Async](
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
       streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
-      h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
+      data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
+      created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
+      closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
+      h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, data, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
       bgRead <- h2.readLoop.compile.drain.background
       bgWrite <- h2.writeLoop.compile.drain.background
       // _ <- Stream.awakeDelay(10.seconds).evalMap(_ => h2.outgoing.offer(Frame.Ping(0, false, None) :: Nil)).compile.drain.background

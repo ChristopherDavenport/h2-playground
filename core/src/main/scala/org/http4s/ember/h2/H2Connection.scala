@@ -15,6 +15,11 @@ class H2Connection[F[_]: Concurrent](
   val mapRef: Ref[F, Map[Int, H2Stream[F]]],
   state: Ref[F, H2Connection.State[F]], // odd if client, even if server
   val outgoing: cats.effect.std.Queue[F, List[Frame]],
+  val outgoingData: cats.effect.std.Queue[F, Frame.Data],
+
+  val createdStreams: cats.effect.std.Queue[F, Int],
+  val closedStreams: cats.effect.std.Queue[F, Int],
+
   hpack: Hpack[F],
   val streamCreateAndHeaders: Resource[F, Unit], 
   val settingsAck: Deferred[F, Either[Throwable, Unit]],
@@ -33,7 +38,7 @@ class H2Connection[F[_]: Concurrent](
     refState <- Ref.of[F, H2Stream.State[F]](
       H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, headers, body)
     )
-  } yield new H2Stream(id, localSettings, state.get.map(_.remoteSettings), refState, hpack, outgoing)
+  } yield new H2Stream(id, localSettings, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id))
 
   def writeLoop: Stream[F, Nothing] = 
     (Stream.eval(outgoing.take) ++
@@ -96,10 +101,13 @@ class H2Connection[F[_]: Concurrent](
           state.get.flatMap{s =>  
             outgoing.offer(Frame.GoAway(0, s.highestStreamInitiated, H2Error.ProtocolError.value, None) :: Nil)
           }
-        case g@Frame.GoAway(_, _,_,_) => mapRef.get.flatMap{ m => 
+        case g@Frame.GoAway(_, _,_,bv) => mapRef.get.flatMap{ m => 
           m.values.toList.traverse_(connection => connection.receiveGoAway(g))
-        }
-        case Frame.Ping(_, _, _) => Applicative[F].unit
+        } >> outgoing.offer(Frame.Ping.ack.copy(data = bv) :: Nil)
+        case Frame.Ping(_, false, bv) => 
+          outgoing.offer(Frame.Ping.ack.copy(data = bv) :: Nil)
+        case Frame.Ping(_, true, _) => Applicative[F].unit
+
 
         case w@Frame.WindowUpdate(i, size) => 
           i match {
@@ -108,6 +116,7 @@ class H2Connection[F[_]: Concurrent](
                 newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
                 oldWriteBlock <- state.modify(s => (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + size), s.writeBlock))
                 _ <- oldWriteBlock.complete(Right(()))
+                _ <- outgoing.offer(Frame.Ping.ack :: Nil)
               } yield ()
             case otherwise => 
               mapRef.get.map(_.get(otherwise)).flatMap{
@@ -125,9 +134,14 @@ class H2Connection[F[_]: Concurrent](
             case Some(s) => 
               s.receiveHeaders(h)
             case None => 
-              // initiateStreamById(i)
-              // println(s"No Stream Exists... $i")
-              Applicative[F].unit
+              streamCreateAndHeaders.use(_ => 
+                for {
+                  stream <- initiateStreamById(i)
+                  _ <- mapRef.update(m => m.get(i).fold(m.+(i -> stream))(_ => m))
+                  _ <- stream.receiveHeaders(h)
+                  enqueue <- createdStreams.offer(i)
+                } yield ()
+              )
           }
         case Frame.Continuation(_, _, _) => Applicative[F].unit // TODO header regions need to be identified and chained
         

@@ -13,6 +13,7 @@ import java.nio.file.{Paths, Path}
 import scala.concurrent.duration._
 import javax.net.ssl.SSLEngine
 import com.comcast.ip4s._
+import scodec.bits._
 
 object H2Server {
 
@@ -22,14 +23,13 @@ object H2Server {
     port: Port, 
     tlsContext: TLSContext[F], 
     httpApp: HttpApp[F], 
-    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default
+    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(100))
   ) = for {
     sg <- Network[F].socketGroup()
     // wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
     // currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
     // tlsContext <- Resource.eval(Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray))//)
     _ <- sg.server(Some(host),Some(port)).map{socket => 
-      println("Socket Acquired")
       val r = for {
         tlsSocket <- tlsContext.server(socket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
           l.find(_ === "h2").getOrElse("http/1.1")
@@ -45,7 +45,10 @@ object H2Server {
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
         streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
-        h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
+        data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
+        created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
+        closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
+        h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, data, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
         _ <- Resource.eval(
           tlsSocket.read(Preface.clientBV.size.toInt).flatMap{
             case Some(s) => 
@@ -57,11 +60,38 @@ object H2Server {
           }
         )
           
-        bgRead <- h2.readLoop.compile.drain.background
-        bgWrite <- h2.writeLoop.compile.drain.background
 
-        _ <- Resource.eval(h2.outgoing.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
+
+        bgWrite <- h2.writeLoop.compile.drain.background
+        _ <- Resource.eval(queue.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
+        bgRead <- h2.readLoop.compile.drain.background
+
         _ <- Resource.eval(h2.settingsAck.get.rethrow)
+        created <- Stream(
+          Stream.eval(created.take)
+        ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
+          .evalMap{i =>
+
+              for {
+                stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
+                headers <- stream.getHeaders
+                req = PseudoHeaders.headersToRequestNoBody(headers).get // TODO fix
+                  .covary[F].withBodyStream(stream.readBody)
+                _ = println(s"Got req $req")
+                resp <- httpApp(req)
+                _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false)
+                _ <- (
+                  resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)) ++
+                  Stream.eval(stream.sendData(ByteVector.empty, true))
+                ).compile.drain
+
+              } yield ()
+            
+          }.compile.drain
+            .onError{ case e => Sync[F].delay(println(s"Uh-oh $e"))}
+            .background
+
+
         _ <- Resource.eval(stateRef.update(s => s.copy(writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
         
         s = {
