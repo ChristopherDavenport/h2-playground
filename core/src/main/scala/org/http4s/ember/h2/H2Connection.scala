@@ -11,6 +11,7 @@ import scodec.bits._
 class H2Connection[F[_]: Concurrent](
   host: com.comcast.ip4s.Host,
   port: com.comcast.ip4s.Port,
+  localSettings: Frame.Settings.ConnectionSettings,
   val mapRef: Ref[F, Map[Int, H2Stream[F]]],
   state: Ref[F, H2Connection.State[F]], // odd if client, even if server
   val outgoing: cats.effect.std.Queue[F, List[Frame]],
@@ -25,14 +26,14 @@ class H2Connection[F[_]: Concurrent](
   ).flatMap(initiateStreamById(_))
 
   def initiateStreamById(id: Int): F[H2Stream[F]] = for {
-    settings <- state.get.map(_.settings)
+    settings <- state.get.map(_.remoteSettings)
     writeBlock <- Deferred[F, Either[Throwable, Unit]]
     headers <- Deferred[F, Either[Throwable, List[(String, String)]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.remoteInitialWindowSize.windowSize, writeBlock, settings.localInitialWindowSize.windowSize, headers, body)
+      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, headers, body)
     )
-  } yield new H2Stream(id, state.get.map(_.settings), refState, hpack, outgoing)
+  } yield new H2Stream(id, localSettings, state.get.map(_.remoteSettings), refState, hpack, outgoing)
 
   def writeLoop: Stream[F, Nothing] = 
     (Stream.eval(outgoing.take) ++
@@ -85,10 +86,10 @@ class H2Connection[F[_]: Concurrent](
       .evalTap{
         case settings@Frame.Settings(0,false, _) => 
           state.modify{s => 
-            val newSettings = Frame.Settings.updateSettings(settings, s.settings)
-            (s.copy(settings = newSettings), newSettings)
+            val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
+            (s.copy(remoteSettings = newSettings), newSettings)
           }.map(settings => println(s"Connection $host:$port Settings- $settings")) >> // TODO cheating
-          outgoing.offer(Frame.Settings(0, true, List.empty) :: Nil) >> // Ack
+          outgoing.offer(Frame.Settings.Ack :: Nil) >> // Ack
           settingsAck.complete(Either.right(())).void
         case Frame.Settings(0, true, _) => Applicative[F].unit
         case Frame.Settings(_, _, _) => 
@@ -136,10 +137,12 @@ class H2Connection[F[_]: Concurrent](
               for {
                 st <- state.get
                 newSize = st.readWindow - d.data.size.toInt
-                needsWindowUpdate = (newSize <= (st.settings.localInitialWindowSize.windowSize / 2))
-                _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) st.settings.localInitialWindowSize.windowSize else newSize.toInt))
+                
+                needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
+                // _ = println(s"newSize: $newSize, needsWindowUpdate: $needsWindowUpdate")
+                _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize.toInt))
                 _ <- s.receiveData(d)
-                _ <- if (needsWindowUpdate) outgoing.offer(Frame.WindowUpdate(0, st.settings.localInitialWindowSize.windowSize - newSize.toInt):: Nil) else Applicative[F].unit
+                _ <- if (needsWindowUpdate) outgoing.offer(Frame.WindowUpdate(0, localSettings.initialWindowSize.windowSize - newSize.toInt):: Nil) else Applicative[F].unit
               } yield ()
             case None => 
               println(s"Data: No Stream Exists... $i")
@@ -164,7 +167,7 @@ class H2Connection[F[_]: Concurrent](
 }
 
 object H2Connection {
-  case class State[F[_]](settings: Frame.Settings.ConnectionSettings, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, highestStreamInitiated: Int)
+  case class State[F[_]](remoteSettings: Frame.Settings.ConnectionSettings, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, highestStreamInitiated: Int)
   // sealed trait ConnectionType
   // object ConnectionType {
   //   case object Server extends ConnectionType

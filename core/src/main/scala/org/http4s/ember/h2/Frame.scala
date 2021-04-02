@@ -420,7 +420,7 @@ object Frame {
         case (base, setting: SettingsMaxConcurrentStreams) => 
           base.copy(maxConcurrentStreams = setting)
         case (base, setting: SettingsInitialWindowSize) => 
-          base.copy(remoteInitialWindowSize = setting)
+          base.copy(initialWindowSize = setting)
         case (base, setting: SettingsMaxFrameSize) => 
           base.copy(maxFrameSize = setting)
         case (base, setting: SettingsMaxHeaderListSize) => 
@@ -433,18 +433,34 @@ object Frame {
       tableSize: SettingsHeaderTableSize,
       enablePush: SettingsEnablePush,
       maxConcurrentStreams: SettingsMaxConcurrentStreams,
-      localInitialWindowSize: SettingsInitialWindowSize,
-      remoteInitialWindowSize: SettingsInitialWindowSize,
+      initialWindowSize: SettingsInitialWindowSize,
       maxFrameSize: SettingsMaxFrameSize,
       maxHeaderListSize: Option[SettingsMaxHeaderListSize]
     )
     object ConnectionSettings {
+
+      def toSettings(connectionSettings: ConnectionSettings): Settings = {
+        val tableSize = if (connectionSettings.tableSize != default.tableSize) connectionSettings.tableSize :: Nil else Nil 
+        val enablePush = if (connectionSettings.enablePush != default.enablePush) connectionSettings.enablePush :: Nil else Nil
+        val maxConcurrentStreams = if (connectionSettings.maxConcurrentStreams != default.maxConcurrentStreams) connectionSettings.maxConcurrentStreams :: Nil else Nil
+        val initialWindowSize = if (connectionSettings.initialWindowSize != default.initialWindowSize) connectionSettings.initialWindowSize :: Nil else Nil
+        val maxFrameSize = if (connectionSettings.maxFrameSize != default.maxFrameSize) connectionSettings.maxFrameSize :: Nil else Nil
+        val maxHeaderListSize = if (connectionSettings.maxHeaderListSize != default.maxHeaderListSize) {
+          connectionSettings.maxHeaderListSize match {
+            case Some(s) => s :: Nil
+            case None => Nil
+          }
+        } else Nil
+        Settings(0, false, tableSize.widen ::: enablePush.widen ::: maxConcurrentStreams.widen ::: initialWindowSize.widen ::: maxFrameSize.widen ::: maxHeaderListSize.widen)
+
+      }
+
+
       val default = ConnectionSettings(
         tableSize = SettingsHeaderTableSize(4096),
         enablePush = SettingsEnablePush(true),
         maxConcurrentStreams = SettingsMaxConcurrentStreams(1024),
-        localInitialWindowSize = SettingsInitialWindowSize(65535),
-        remoteInitialWindowSize = SettingsInitialWindowSize(65535),
+        initialWindowSize = SettingsInitialWindowSize(65535),
         maxFrameSize = SettingsMaxFrameSize(16384),
         maxHeaderListSize = None
       )
@@ -487,7 +503,7 @@ object Frame {
     sealed abstract class Setting(val identifier: Short, val value: Integer)
     object Setting {
       def apply(identifier: Short, value: Integer): Setting = identifier match {
-        case 0x0 => SettingsHeaderTableSize(value)
+        case 0x1 => SettingsHeaderTableSize(value)
         case 0x2 => value match {
           case 1 => SettingsEnablePush(true)
           case 0 => SettingsEnablePush(false)
@@ -501,7 +517,7 @@ object Frame {
       }
     }
     //The initial value is 4,096 octets
-    case class SettingsHeaderTableSize(size: Integer) extends Setting(0x0, size)
+    case class SettingsHeaderTableSize(size: Integer) extends Setting(0x1, size)
     // Default true
     case class SettingsEnablePush(isEnabled: Boolean) extends Setting(0x2, if (isEnabled) 1 else 0)
     // Unbounded

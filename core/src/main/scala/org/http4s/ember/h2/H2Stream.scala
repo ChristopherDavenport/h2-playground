@@ -12,7 +12,8 @@ import scodec.bits._
 // in StreamState
 class H2Stream[F[_]: Concurrent](
   val id: Int,
-  val currentConnectionSettings: F[Frame.Settings.ConnectionSettings],
+  localSettings: Frame.Settings.ConnectionSettings,
+  val remoteSettings: F[Frame.Settings.ConnectionSettings],
   val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
   val enqueue: cats.effect.std.Queue[F, List[Frame]]
@@ -98,14 +99,15 @@ class H2Stream[F[_]: Concurrent](
           case s => s
         } else s.state
 
+        val needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
+        // println(s"s: $id , newSize: $newSize, needsWindowUpdate: $needsWindowUpdate")
         for {
-          settings <- currentConnectionSettings
-          needsWindowUpdate = (newSize <= (settings.localInitialWindowSize.windowSize / 2))
+          // settings <- remoteConnectionSettings
           _ <- state.update(s => 
-            s.copy(state = newState, readWindow = if (needsWindowUpdate) settings.localInitialWindowSize.windowSize else newSize)
+            s.copy(state = newState, readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize)
           )
           _ <- s.readBuffer.offer(Either.right(data.data))
-          _ <- if (needsWindowUpdate) enqueue.offer(Frame.WindowUpdate(id, settings.localInitialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
+          _ <- if (needsWindowUpdate) enqueue.offer(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
         } yield ()
       case otherwise =>
         println(s"Unexpected: $s - $data")

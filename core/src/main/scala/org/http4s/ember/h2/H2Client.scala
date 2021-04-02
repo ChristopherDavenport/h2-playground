@@ -46,6 +46,7 @@ Connection
 */
 class H2Client[F[_]: Async](
   sg: SocketGroup[F],
+  localSettings: Frame.Settings.ConnectionSettings,
   // network: Network[F],
   tls: TLSContext[F],
   connections: Ref[F, Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]]
@@ -80,26 +81,27 @@ class H2Client[F[_]: Async](
         l.find(_ === "h2").getOrElse("http/1.1")
       }.some), None)
       _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-      _ <- Resource.eval(tlsSocket.applicationProtocol).evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
+      _ <- Resource.eval(tlsSocket.applicationProtocol)
+        .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.remoteInitialWindowSize.windowSize, initialWriteBlock, Frame.Settings.ConnectionSettings.default.localInitialWindowSize.windowSize, 1)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
       streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
-      h2 = new H2Connection(host, port, ref, stateRef, queue, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
+      h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
       bgRead <- h2.readLoop.compile.drain.background
       bgWrite <- h2.writeLoop.compile.drain.background
-      _ <- Stream.awakeDelay(10.seconds).evalMap(_ => h2.outgoing.offer(Frame.Ping(0, false, None) :: Nil)).compile.drain.background
+      // _ <- Stream.awakeDelay(10.seconds).evalMap(_ => h2.outgoing.offer(Frame.Ping(0, false, None) :: Nil)).compile.drain.background
       _ <- Resource.make(tlsSocket.write(Chunk.byteVector(Preface.clientBV)))(_ => 
         stateRef.get.map(_.highestStreamInitiated).flatMap{i => 
           tlsSocket.write(Chunk.byteVector(Frame.toByteVector(Frame.GoAway(0, i, H2Error.NoError.value, None))))
         }
       )
-      _ <- Resource.eval(h2.outgoing.offer(Frame.Settings(0, false, List.empty) :: Nil))
+      _ <- Resource.eval(h2.outgoing.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
       _ <- Resource.eval(h2.settingsAck.get.rethrow)
-      _ = println("Connection Acquired")
+      _ <- Resource.eval(stateRef.update(s => s.copy(writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
     } yield h2
     r.allocated
   }
@@ -134,13 +136,13 @@ class H2Client[F[_]: Async](
 }
 
 object H2Client {
-  def impl[F[_]: Async]: Resource[F, org.http4s.client.Client[F]] = {
+  def impl[F[_]: Async](settings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default): Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()
       tlsContext <- Resource.eval(Network[F].tlsContext.system) // TODO
       // sem <- Resource.eval(cats.effect.std.Semaphore[F](1))
       map <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
-      h2 = new H2Client(sg, tlsContext, map)
+      h2 = new H2Client(sg, settings, tlsContext, map)
     } yield org.http4s.client.Client(h2.run)
   }
 }
