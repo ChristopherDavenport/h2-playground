@@ -52,14 +52,14 @@ object ServerTest {
   
 }
 
-// object ClientMain extends IOApp {
-//   def run(args: List[String]): IO[ExitCode] = {
+object ClientMain extends IOApp {
+  def run(args: List[String]): IO[ExitCode] = {
 
-//     ClientTest.test[IO]
-//       // .use(_ => IO.never)
-//       .as(ExitCode.Success)
-//   }
-// }
+    ClientTest.test[IO]
+      // .use(_ => IO.never)
+      .as(ExitCode.Success)
+  }
+}
 
 object ClientTest {
 
