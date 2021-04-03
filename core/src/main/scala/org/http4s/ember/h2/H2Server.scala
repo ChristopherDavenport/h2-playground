@@ -43,7 +43,7 @@ object H2Server {
         stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
-        settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
+        settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
         streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
         data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
         created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
@@ -66,11 +66,20 @@ object H2Server {
         _ <- Resource.eval(queue.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
         bgRead <- h2.readLoop.compile.drain.background
 
-        _ <- Resource.eval(h2.settingsAck.get.rethrow)
+        settings <- Resource.eval(h2.settingsAck.get.rethrow)
+        _ <- 
+          Stream.eval(closed.take)
+            .repeat
+            .evalMap{i =>
+              println(s"Removed Stream $i")
+              ref.update(m => m - i)
+            }.compile.drain.background
+
         created <- Stream(
           Stream.eval(created.take)
         ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
           .evalMap{i =>
+              println(s"Created Stream $i")
 
               for {
                 stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
@@ -103,16 +112,14 @@ object H2Server {
       
       } yield ()
 
-      Stream.resource(r).handleErrorWith(e => Stream.eval(Sync[F].delay(println(s"Encountered Error With Connection $e"))))
+      Stream.resource(r).handleErrorWith(e => 
+        Stream.eval(Sync[F].delay(println(s"Encountered Error With Connection $e")))
+      )
 
     }.parJoin(200)
       .compile
       .resource
       .drain
-    // _ <- org.http4s.ember.server.EmberServerBuilder.default[F]
-    //   .withTLS(tlsContext)
-    //   .withHttpApp(httpApp)
-    //   .build
   } yield ()
 
 }

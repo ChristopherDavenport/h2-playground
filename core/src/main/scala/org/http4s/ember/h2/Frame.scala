@@ -27,7 +27,7 @@ object Frame {
   Flags 1 Byte
   1 bit that must be sent 0x0, and must be ignored
   31 bit unsigned Integer
-  FramePayload that consists of Length (bits or bytes???)
+  FramePayload that consists of Length
 
 */
 

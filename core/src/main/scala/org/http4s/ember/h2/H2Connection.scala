@@ -22,7 +22,7 @@ class H2Connection[F[_]: Concurrent](
 
   hpack: Hpack[F],
   val streamCreateAndHeaders: Resource[F, Unit], 
-  val settingsAck: Deferred[F, Either[Throwable, Unit]],
+  val settingsAck: Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]],
   socket: Socket[F],
 ){
 
@@ -72,17 +72,11 @@ class H2Connection[F[_]: Concurrent](
             Frame.fromRaw(raw) match {
               case Some(frame) => Pull.output1(frame) >> p(leftover)
               case None => 
-                p(leftover)
-                // val g = Frame.GoAway(0, 0, H2Error.ProtocolError.value, None) 
-                // Pull.eval(mapRef.get.flatMap{ m => 
-                //   m.values.toList.traverse_(connection => connection.receiveGoAway(g))
-                // } >> outgoing.offer(g:: Nil)) >> 
-                // Pull.raiseError(new Throwable(s"Protocol Failure, could not convert $raw to frame"))
+                p(leftover) // Ignore Unrecognized frames
             }
           case None => 
             Pull.eval(socket.read(65536)).flatMap{
               case Some(chunk) => 
-                // println(s"Looping with incomplete frame $acc $chunk")
                 p(acc ++ chunk.toByteVector)
               case None =>  println(s"readLoop Terminated with ${acc.decodeUtf8}");  Pull.done 
             }
@@ -98,9 +92,10 @@ class H2Connection[F[_]: Concurrent](
           state.modify{s => 
             val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
             (s.copy(remoteSettings = newSettings), newSettings)
-          }.map(settings => println(s"Connection $host:$port Settings- $settings")) >> // TODO cheating
+          }.flatMap{settings => println(s"Connection $host:$port Settings- $settings") // TODO cheating
           outgoing.offer(Frame.Settings.Ack :: Nil) >> // Ack
-          settingsAck.complete(Either.right(())).void
+          settingsAck.complete(Either.right(settings)).void
+        }
         case Frame.Settings(0, true, _) => Applicative[F].unit
         case Frame.Settings(_, _, _) => 
           state.get.flatMap{s =>  
