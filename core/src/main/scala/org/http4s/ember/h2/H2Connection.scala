@@ -13,7 +13,7 @@ class H2Connection[F[_]: Concurrent](
   port: com.comcast.ip4s.Port,
   localSettings: Frame.Settings.ConnectionSettings,
   val mapRef: Ref[F, Map[Int, H2Stream[F]]],
-  state: Ref[F, H2Connection.State[F]], // odd if client, even if server
+  val state: Ref[F, H2Connection.State[F]], // odd if client, even if server
   val outgoing: cats.effect.std.Queue[F, List[Frame]],
   val outgoingData: cats.effect.std.Queue[F, Frame.Data],
 
@@ -64,7 +64,7 @@ class H2Connection[F[_]: Concurrent](
       if (acc.isEmpty) {
         Pull.eval(socket.read(65536)).flatMap{
           case Some(chunk) => p(chunk.toByteVector)
-          case None => println("readLoop Terminated with empty"); Pull.done 
+          case None => println(s"Connection $host:$port readLoop Terminated with empty"); Pull.done 
         }
       } else {
         Frame.RawFrame.fromByteVector(acc) match {
@@ -78,7 +78,7 @@ class H2Connection[F[_]: Concurrent](
             Pull.eval(socket.read(65536)).flatMap{
               case Some(chunk) => 
                 p(acc ++ chunk.toByteVector)
-              case None =>  println(s"readLoop Terminated with ${acc.decodeUtf8}");  Pull.done 
+              case None =>  println(s"Connection $host:$port readLoop Terminated with $acc");  Pull.done 
             }
             
         }
@@ -173,15 +173,15 @@ class H2Connection[F[_]: Concurrent](
 
         case Frame.PushPromise(_, _, _, _, _) => Applicative[F].unit // TODO Implement Push Promise Flow
         case Frame.Priority(_, _, _, _) => Applicative[F].unit // We Do Nothing with these presently
-      }.drain.onError{
-        case e => Stream.eval(Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e")))
-      }
+      }.drain.handleErrorWith{
+        case e => Stream.eval(Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e"))).drain
+      } ++ Stream.eval(state.update(s => s.copy(closed = true))).drain
 
 
 }
 
 object H2Connection {
-  case class State[F[_]](remoteSettings: Frame.Settings.ConnectionSettings, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, highestStreamInitiated: Int)
+  case class State[F[_]](remoteSettings: Frame.Settings.ConnectionSettings, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, highestStreamInitiated: Int, closed: Boolean)
   // sealed trait ConnectionType
   // object ConnectionType {
   //   case object Server extends ConnectionType

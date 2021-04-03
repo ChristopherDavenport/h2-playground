@@ -85,7 +85,7 @@ class H2Client[F[_]: Async](
         .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1, false)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -152,9 +152,30 @@ object H2Client {
   ): Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()
-      // tlsContext <- Resource.eval(Network[F].tlsContext.system) // TODO
-      // sem <- Resource.eval(cats.effect.std.Semaphore[F](1))
       map <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
+      _ <- Stream.awakeDelay(5.seconds)
+        .evalMap(_ => 
+          map.get
+        ).flatMap(m => Stream.emits(m.toList))
+        .evalMap{
+          case (t, (connection, shutdown)) => 
+            connection.state.get.flatMap{s => 
+              if (s.closed) map.update(m => m - t) >> shutdown else Applicative[F].unit
+            }.attempt
+        }
+        .compile
+        .drain
+        .background
+      
+      // _ <- Stream.awakeDelay(1.seconds)
+      //   .evalMap(_ => map.get)
+      //   .flatMap(m => Stream.emits(m.toList))
+      //   .evalMap{ case ((host, port), (connection, _)) => connection.mapRef.get
+      //     .flatMap(m => Sync[F].delay(println(s"Connection ${host}:${port} State- $m")))
+      //   }
+      //   .compile
+      //   .drain
+      //   .background
       h2 = new H2Client(sg, settings, tlsContext, map)
     } yield org.http4s.client.Client(h2.run)
   }
