@@ -41,16 +41,16 @@ object H2Server {
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1, false)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1, false, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
         streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
-        data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
+        // data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
         created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
         closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
 
-        h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, data, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
+        h2 = new H2Connection(host, port, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
         _ <- Resource.eval(
           tlsSocket.read(Preface.clientBV.size.toInt).flatMap{
             case Some(s) => 
@@ -73,22 +73,20 @@ object H2Server {
           Stream.eval(closed.take)
             .repeat
             .evalMap{i =>
-              println(s"Removed Stream $i")
-              ref.update(m => m - i)
+              // println(s"Removed Stream $i")
+              (Temporal[F].sleep(10.seconds) >> ref.update(m => m - i)).timeout(15.seconds).attempt.start
             }.compile.drain.background
 
         created <- Stream(
           Stream.eval(created.take).repeat
         ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
           .evalMap{i =>
-              println(s"Created Stream $i")
-
-              for {
+              val x = for {
                 stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
                 headers <- stream.getHeaders
                 req = PseudoHeaders.headersToRequestNoBody(headers).get // TODO fix
                   .covary[F].withBodyStream(stream.readBody)
-                _ = println(s"Got req $req")
+                // _ = println(s"Got req $req")
                 resp <- httpApp(req)
                 _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false)
                 _ <- (
@@ -97,9 +95,10 @@ object H2Server {
                 ).compile.drain
 
               } yield ()
+              x.attempt
             
           }.compile.drain
-            .onError{ case e => Sync[F].delay(println(s"Uh-oh $e"))}
+            .onError{ case e => Sync[F].delay(println(s"Server Connection Processing Halted $e"))}
             .background
 
 

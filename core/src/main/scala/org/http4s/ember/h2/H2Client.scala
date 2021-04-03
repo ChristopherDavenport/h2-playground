@@ -85,15 +85,15 @@ class H2Client[F[_]: Async](
         .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1, false)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
       streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
-      data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
+      // data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
       created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
       closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
-      h2 = new H2Connection(host, port, localSettings, ref, stateRef, queue, data, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
+      h2 = new H2Connection(host, port, H2Connection.ConnectionType.Client, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
       bgRead <- h2.readLoop.compile.drain.background
       bgWrite <- h2.writeLoop.compile.drain.background
       _ <- 
@@ -105,9 +105,7 @@ class H2Client[F[_]: Async](
             }.compile.drain.background
       // _ <- Stream.awakeDelay(10.seconds).evalMap(_ => h2.outgoing.offer(Frame.Ping(0, false, None) :: Nil)).compile.drain.background
       _ <- Resource.make(tlsSocket.write(Chunk.byteVector(Preface.clientBV)))(_ => 
-        stateRef.get.map(_.highestStreamInitiated).flatMap{i => 
-          tlsSocket.write(Chunk.byteVector(Frame.toByteVector(Frame.GoAway(0, i, H2Error.NoError.value, None))))
-        }
+          tlsSocket.write(Chunk.byteVector(Frame.toByteVector(Frame.GoAway(0, 0, H2Error.NoError.value, None))))
       )
       _ <- Resource.eval(h2.outgoing.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
       settings <- Resource.eval(h2.settingsAck.get.rethrow)
@@ -129,10 +127,10 @@ class H2Client[F[_]: Async](
     for {
       connection <- Resource.eval(getOrCreate(host, port))
       // Stream Order Must Be Correct. So 
-      stream <- Resource.eval(connection.streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream => 
+      stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream =>
+        connection.mapRef.update(m => m.+(stream.id -> stream)) >> 
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
-      )))
-      _ <- Resource.make(connection.mapRef.update(m => m.+(stream.id -> stream)))(_ => connection.mapRef.update(m => m - stream.id))
+      )))(stream => connection.mapRef.update(m => m - stream.id))
       _ <- (
         req.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)) ++
         Stream.eval(stream.sendData(ByteVector.empty, true))

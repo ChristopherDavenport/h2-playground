@@ -1,5 +1,6 @@
 package org.http4s.ember.h2
 
+import cats.data._
 import cats.effect._
 import fs2._
 import fs2.concurrent._
@@ -17,12 +18,13 @@ class H2Stream[F[_]: Concurrent](
   val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
   val enqueue: cats.effect.std.Queue[F, List[Frame]],
-  val onClosed: F[Unit]
+  val onClosed: F[Unit],
+  val goAway: H2Error => F[Unit]
 ){
 
 
   // TODO Check Settings to Split Headers into Headers and Continuation
-  def sendHeaders(headers: List[(String, String, Boolean)], endStream: Boolean): F[Unit] = 
+  def sendHeaders(headers: NonEmptyList[(String, String, Boolean)], endStream: Boolean): F[Unit] = 
     state.get.flatMap{ s => 
       s.state match {
         case StreamState.Idle | StreamState.HalfClosedRemote | StreamState.Open  => 
@@ -43,7 +45,7 @@ class H2Stream[F[_]: Concurrent](
             }.flatMap{state =>
               if (state == StreamState.Closed) onClosed else Applicative[F].unit
             }.void
-        case _ => ??? // Ruh-roh
+        case _ => new Throwable("Stream Was Closed").raiseError
       }
     }
     
@@ -77,7 +79,7 @@ class H2Stream[F[_]: Concurrent](
           enqueue.offer(Frame.Data(id, head, None, false):: Nil) >> 
           s.writeBlock.get.rethrow >> sendData(tail, endStream)
         }  
-      case _ => ???
+      case _ => new Throwable("Stream Was Closed").raiseError
     }
   }
 
@@ -88,9 +90,11 @@ class H2Stream[F[_]: Concurrent](
     s.state match {
       case StreamState.Open | StreamState.HalfClosedLocal | StreamState.Idle => 
         for {
-          l <- hpack.decodeHeaders(headers.headerBlock)
-          others <- continuations.toList.flatTraverse(c => hpack.decodeHeaders(c.headerBlockFragment))
-          h = l ::: others
+          h <- hpack.decodeHeaders(headers.headerBlock ++ continuations.foldLeft(ByteVector.empty){ case (acc, cont) => acc ++ cont.headerBlockFragment}).onError{
+            case e => println("Issue in headers $e"); goAway(H2Error.CompressionError)
+          }
+          // others <- continuations.toList.flatTraverse(c => hpack.decodeHeaders(c.headerBlockFragment).map(_.toList))
+          // h = l ++ others
           newstate = if (headers.endStream) s.state match {
             case StreamState.Open => StreamState.HalfClosedRemote // Client
             case StreamState.Idle => StreamState.HalfClosedRemote // Server
@@ -107,11 +111,15 @@ class H2Stream[F[_]: Concurrent](
           _ <- headers.complete(Either.right(h))
           _ <- if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
         } yield ()
-      case _ => ???
+      case StreamState.HalfClosedRemote | StreamState.Closed =>
+        goAway(H2Error.StreamClosed)
+      case StreamState.ReservedLocal | StreamState.ReservedRemote =>
+        goAway(H2Error.InternalError) // Not Implemented Push promise Support
     }
   }
 
   def receiveData(data: Frame.Data): F[Unit] = state.get.flatMap{ s => 
+    println(s"s: $s data:$data")
     s.state match {
       case StreamState.Open | StreamState.HalfClosedLocal => 
         // println(s"ReceiveData $data")
@@ -135,10 +143,27 @@ class H2Stream[F[_]: Concurrent](
           _ <- if (needsWindowUpdate && !isClosed) enqueue.offer(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
           _ <- if (isClosed) onClosed else Applicative[F].unit
         } yield ()
-      case otherwise =>
-        println(s"Unexpected: $s - $data")
-        Applicative[F].unit
+      case StreamState.Idle => 
+        goAway(H2Error.ProtocolError)
+      case StreamState.HalfClosedRemote | StreamState.Closed =>
+        rstStream(H2Error.StreamClosed)
+      case StreamState.ReservedLocal | StreamState.ReservedRemote =>
+        goAway(H2Error.InternalError) // Not Implemented Push promise Support
     }
+  }
+
+  def rstStream(error: H2Error): F[Unit] = {
+    val rst = error.toRst(id)
+    for {
+    s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
+    _ <- enqueue.offer(rst :: Nil)
+    t = new Throwable(s"Sending RstStream, cancelling: $rst")
+    _ <- s.writeBlock.complete(Left(t))
+    _ <- s.readHeaders.complete(Left(t))
+    _ <- s.readBuffer.offer(Left(t))
+    _ <- onClosed
+  } yield ()
+
   }
 
   // Broadcast Frame
@@ -171,7 +196,7 @@ class H2Stream[F[_]: Concurrent](
   } yield ()
 
 
-  def getHeaders: F[List[(String, String)]] = state.get.flatMap(_.readHeaders.get.rethrow)
+  def getHeaders: F[NonEmptyList[(String, String)]] = state.get.flatMap(_.readHeaders.get.rethrow)
 
   def readBody: Stream[F, Byte] = {
     def p: Pull[F, Byte, Unit] = 
@@ -202,5 +227,5 @@ class H2Stream[F[_]: Concurrent](
 }
 
 object H2Stream {
-  case class State[F[_]](state: StreamState, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, readHeaders: Deferred[F, Either[Throwable, List[(String, String)]]],  readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]])
+  case class State[F[_]](state: StreamState, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, readHeaders: Deferred[F, Either[Throwable, NonEmptyList[(String, String)]]],  readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]])
 }

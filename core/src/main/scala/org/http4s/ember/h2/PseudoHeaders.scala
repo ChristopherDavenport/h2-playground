@@ -3,6 +3,7 @@ package org.http4s.ember.h2
 import org.http4s._
 import cats.syntax.all._
 import org.typelevel.ci._
+import cats.data._
 
 /** HTTP/2 pseudo headers */
 object PseudoHeaders {
@@ -16,22 +17,24 @@ object PseudoHeaders {
   )
 
   import org.http4s.Request
-  def requestToHeaders[F[_]](req: Request[F]): List[(String, String, Boolean)] = {
+  def requestToHeaders[F[_]](req: Request[F]): NonEmptyList[(String, String, Boolean)] = {
     val path = {
       val s = req.uri.path.renderString
       if (s.isEmpty) "/"
       else s
     }
-    val l = List(
+    val l = NonEmptyList.of(
       (METHOD, req.method.toString, false),
-      (SCHEME, req.uri.scheme.map(_.value).getOrElse("https"), false),
-      (PATH, path, false),
-      (AUTHORITY, req.uri.authority.map(_.toString).getOrElse(""), false)
-    ) ::: req.headers.headers.map(raw => (raw.name.toString, raw.value, org.http4s.Headers.SensitiveHeaders.contains(raw.name)))
+      (SCHEME, req.uri.scheme.map(_.value).getOrElse("https"), false) ::
+      (PATH, path, false) ::
+      (AUTHORITY, req.uri.authority.map(_.toString).getOrElse(""), false) ::
+      req.headers.headers.map(raw => (raw.name.toString, raw.value, org.http4s.Headers.SensitiveHeaders.contains(raw.name))):_*
+    )
     l
   }
 
-  def headersToRequestNoBody(headers: List[(String, String)]): Option[Request[fs2.Pure]] = {
+  def headersToRequestNoBody(hI: NonEmptyList[(String, String)]): Option[Request[fs2.Pure]] = {
+    val headers: List[(String, String)] = hI.toList
     val method = headers.find(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
     val scheme = headers.find(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
     val path = headers.find(_._1 === PATH).map(_._2)
@@ -61,13 +64,15 @@ object PseudoHeaders {
   // Response pseudo header
   val STATUS = ":status"
 
-  def responseToHeaders[F[_]](response: Response[F]): List[(String, String, Boolean)] = {
-    (STATUS, response.status.code.toString, false) ::
-    response.headers.headers
+  def responseToHeaders[F[_]](response: Response[F]): NonEmptyList[(String, String, Boolean)] = {
+    NonEmptyList(
+      (STATUS, response.status.code.toString, false),
+      response.headers.headers
       .map(raw => (raw.name.toString.toLowerCase, raw.value, org.http4s.Headers.SensitiveHeaders.contains(raw.name)))
+    )
   }
 
-  def headersToResponseNoBody(headers: List[(String, String)]): Option[Response[fs2.Pure]] = {
+  def headersToResponseNoBody(headers: NonEmptyList[(String, String)]): Option[Response[fs2.Pure]] = {
     val status = headers.collectFirstSome{
       case (PseudoHeaders.STATUS, value) => 
         Status.fromInt(value.toInt).toOption

@@ -11,9 +11,10 @@ import com.twitter.hpack.HeaderListener
 import java.nio.charset.StandardCharsets
 import scala.collection.mutable.ListBuffer
 
+import cats.data._
 trait Hpack[F[_]]{
-  def encodeHeaders(headers: List[(String, String, Boolean)]): F[ByteVector]
-  def decodeHeaders(bv: ByteVector): F[List[(String, String)]]
+  def encodeHeaders(headers: NonEmptyList[(String, String, Boolean)]): F[ByteVector]
+  def decodeHeaders(bv: ByteVector): F[NonEmptyList[(String, String)]]
 }
 
 object Hpack {
@@ -31,14 +32,14 @@ object Hpack {
     decodeLock: Semaphore[F],
     tDecoder: com.twitter.hpack.Decoder
   ) extends Hpack[F]{
-    def encodeHeaders(headers: List[(String, String, Boolean)]): F[ByteVector] = 
-      encodeLock.permit.use(_ => Hpack.encodeHeaders[F](tEncoder, headers))
-    def decodeHeaders(bv: ByteVector): F[List[(String, String)]] = 
+    def encodeHeaders(headers: NonEmptyList[(String, String, Boolean)]): F[ByteVector] = 
+      encodeLock.permit.use(_ => Hpack.encodeHeaders[F](tEncoder, headers.toList))
+    def decodeHeaders(bv: ByteVector): F[NonEmptyList[(String, String)]] = 
       decodeLock.permit.use(_ => Hpack.decodeHeaders[F](tDecoder,bv))
 
   }
 
-  def decodeHeaders[F[_]: Sync](tDecoder: com.twitter.hpack.Decoder, bv: ByteVector): F[List[(String, String)]] = Sync[F].delay{
+  def decodeHeaders[F[_]: Sync](tDecoder: com.twitter.hpack.Decoder, bv: ByteVector): F[NonEmptyList[(String, String)]] = Sync[F].delay{
     var buffer = new ListBuffer[(String, String)]
     val is = new ByteArrayInputStream(bv.toArray)
     val listener = new HeaderListener{
@@ -54,8 +55,8 @@ object Hpack {
 
     val decoded = buffer.toList
     // println(s"Decoded: $decoded")
-    decoded
-  }
+    NonEmptyList.fromList(decoded).toRight(new Throwable("Header List Was Empty"))
+  }.rethrow
 
   def encodeHeaders[F[_]: Sync](tEncoder: com.twitter.hpack.Encoder, headers: List[(String, String, Boolean)]): F[ByteVector] = Sync[F].delay{
     val os = new ByteArrayOutputStream(1024)

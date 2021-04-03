@@ -47,7 +47,13 @@ object Frame {
         if (bv.length >= 9 + length) {
           val `type` = bv(3)
           val flags = bv(4)
-          val identifier =  (bv(8) & 0xFF) | ((bv(7) & 0xFF) << 8) | ((bv(6) & 0xFF) << 16) | ((bv(5) & 0xFF) << 24)
+          val s0 = (bv(5) & 0xff) 
+          val s1 = (bv(6) & 0xff) << 16
+          val s2 = (bv(7) & 0xff) << 8
+          val s3 = (bv(8) & 0xff) << 0
+          val modS0 = (s0 & ~(1 << 7)) << 24
+          val identifier = modS0 | s1 | s2 | s3
+          // val identifier =  (bv(8) & 0xFF) | ((bv(7) & 0xFF) << 8) | ((bv(6) & 0xFF) << 16) | ((bv(5) & 0xFF) << 24)
           (
             RawFrame(
               length,
@@ -525,7 +531,17 @@ object Frame {
     // The initial value is 2^16-1 (65,535) octets.
     case class SettingsInitialWindowSize(windowSize: Integer) extends Setting(0x4, windowSize)
     // The initial value is 2^14 (16,384) octets
-    case class SettingsMaxFrameSize(frameSize: Integer) extends Setting(0x5, frameSize)
+    // 2^14 (16,384) and 2^24-1
+  //  (16,777,215) octets, inclusive.
+    case class SettingsMaxFrameSize(frameSize: Int) extends Setting(0x5, frameSize)
+    object SettingsMaxFrameSize {
+      val MAX = SettingsMaxFrameSize(16777215)
+      val MIN = SettingsMaxFrameSize(16384)
+      def fromInt(frameSize: Int) : Option[SettingsMaxFrameSize] = {
+        if (frameSize <= MAX.frameSize && frameSize >= MIN.frameSize) SettingsMaxFrameSize(frameSize).some
+        else None
+      }
+    }
     // The value is based on the
     // uncompressed size of header fields, including the length of the
     // name and value in octets plus an overhead of 32 octets for each
@@ -749,7 +765,9 @@ object Frame {
     |                   Header Block Fragment (*)                 ...
     +---------------------------------------------------------------+
   */
-  case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: ByteVector) extends Frame
+  case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: ByteVector) extends Frame{
+    override def toString = s"Continuation(identifier=$identifier, endHeader=$endHeaders, headerBlockFragment=$headerBlockFragment)"
+  }
   object Continuation {
     val `type`: Byte = 0x9
     def toRaw(cont: Continuation): RawFrame = {
