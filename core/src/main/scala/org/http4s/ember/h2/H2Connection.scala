@@ -122,18 +122,18 @@ class H2Connection[F[_]: Concurrent](
       .evalTap{
         // Headers and Continuation Frames are Stateful
         // Headers if not closed MUST
-        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, Some(holdover))) => 
-          if (holdover._1.identifier == id) {
+        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, Some((h, cs)))) => 
+          if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = None)) >> 
             mapRef.get.map(_.get(id)).flatMap{
                 case Some(s) => 
-                  s.receiveHeaders(holdover._1, holdover._2 ::: c :: Nil:_*)
+                  s.receiveHeaders(h, cs ::: c :: Nil:_*)
                 case None => 
                   streamCreateAndHeaders.use(_ => 
                     for {
                       stream <- initiateStreamById(id)
                       _ <- mapRef.update(m => m.get(id).fold(m.+(id -> stream))(_ => m))
-                      _ <- stream.receiveHeaders(holdover._1, holdover._2.+:(c):_*)
+                      _ <- stream.receiveHeaders(h, cs ::: c :: Nil:_*)
                       enqueue <- createdStreams.offer(id)
                     } yield ()
                   )
@@ -141,7 +141,6 @@ class H2Connection[F[_]: Concurrent](
           } else goAway(H2Error.ProtocolError)
         
         case (c@Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, Some((h, cs)))) =>
-          println(s"c $c - $h $cs")
           if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = (h, cs ::: c :: Nil).some))
           } else goAway(H2Error.ProtocolError)
@@ -202,7 +201,7 @@ class H2Connection[F[_]: Concurrent](
         case (_:Frame.GoAway, _) => 
           goAway(H2Error.ProtocolError)
         case (Frame.Ping(0, false, bv),s) => 
-          if (bv.size.toInt == 8) {
+          if (bv.fold(true)(_.size.toInt == 8)) {
             outgoing.offer(Frame.Ping.ack.copy(data = bv) :: Nil)
           } else {
             goAway(H2Error.FrameSizeError)

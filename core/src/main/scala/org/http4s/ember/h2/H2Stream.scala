@@ -89,8 +89,11 @@ class H2Stream[F[_]: Concurrent](
     s => 
     s.state match {
       case StreamState.Open | StreamState.HalfClosedLocal | StreamState.Idle => 
+        val block = headers.headerBlock ++ continuations.foldLeft(ByteVector.empty){ case (acc, cont) => acc ++ cont.headerBlockFragment}
+        println(headers)
+        continuations.foreach(println)
         for {
-          h <- hpack.decodeHeaders(headers.headerBlock ++ continuations.foldLeft(ByteVector.empty){ case (acc, cont) => acc ++ cont.headerBlockFragment}).onError{
+          h <- hpack.decodeHeaders(block).onError{
             case e => println("Issue in headers $e"); goAway(H2Error.CompressionError)
           }
           // others <- continuations.toList.flatTraverse(c => hpack.decodeHeaders(c.headerBlockFragment).map(_.toList))
