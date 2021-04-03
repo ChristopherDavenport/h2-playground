@@ -103,7 +103,7 @@ object H2Server {
       
       } yield ()
 
-      Stream.resource(r)
+      Stream.resource(r).handleErrorWith(e => Stream.eval(Sync[F].delay(println(s"Encountered Error With Connection $e"))))
 
     }.parJoin(200)
       .compile

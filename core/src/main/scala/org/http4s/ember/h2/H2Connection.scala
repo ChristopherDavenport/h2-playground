@@ -72,7 +72,12 @@ class H2Connection[F[_]: Concurrent](
             Frame.fromRaw(raw) match {
               case Some(frame) => Pull.output1(frame) >> p(leftover)
               case None => 
-                Pull.raiseError(new Throwable(s"Protocol Failure, could not convert $raw to frame"))
+                p(leftover)
+                // val g = Frame.GoAway(0, 0, H2Error.ProtocolError.value, None) 
+                // Pull.eval(mapRef.get.flatMap{ m => 
+                //   m.values.toList.traverse_(connection => connection.receiveGoAway(g))
+                // } >> outgoing.offer(g:: Nil)) >> 
+                // Pull.raiseError(new Throwable(s"Protocol Failure, could not convert $raw to frame"))
             }
           case None => 
             Pull.eval(socket.read(65536)).flatMap{

@@ -2,6 +2,7 @@ package org.http4s.ember.h2
 
 import org.http4s._
 import cats.syntax.all._
+import org.typelevel.ci._
 
 /** HTTP/2 pseudo headers */
 object PseudoHeaders {
@@ -62,7 +63,8 @@ object PseudoHeaders {
 
   def responseToHeaders[F[_]](response: Response[F]): List[(String, String, Boolean)] = {
     (STATUS, response.status.code.toString, false) ::
-    response.headers.headers.map(raw => (raw.name.toString, raw.value, org.http4s.Headers.SensitiveHeaders.contains(raw.name)))
+    response.headers.headers
+      .map(raw => (raw.name.toString.toLowerCase, raw.value, org.http4s.Headers.SensitiveHeaders.contains(raw.name)))
   }
 
   def headersToResponseNoBody(headers: List[(String, String)]): Option[Response[fs2.Pure]] = {
