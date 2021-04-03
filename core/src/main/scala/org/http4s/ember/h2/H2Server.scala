@@ -78,7 +78,7 @@ object H2Server {
             }.compile.drain.background
 
         created <- Stream(
-          Stream.eval(created.take)
+          Stream.eval(created.take).repeat
         ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
           .evalMap{i =>
               println(s"Created Stream $i")
