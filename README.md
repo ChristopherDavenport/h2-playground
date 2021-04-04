@@ -29,11 +29,11 @@ The Frame identifies an encoding context that allows us to communicate. This is 
 ### H2
 
 Http2 operates via a single persistent connection.
-We outline 2 concurrent processes outlined with creation of a connection.
 
 
 #### Transport Plane
 
+We outline 2 concurrent processes outlined with creation of a connection.
 We have a readLoop which takes information that is written to us from the remote endpoint.
 This is where the bulk of the logic resides as we determine how to respond to invalid communication.
 Second, we have a writeLoop who takes generated data and writes it to the client and backpressures on connection
