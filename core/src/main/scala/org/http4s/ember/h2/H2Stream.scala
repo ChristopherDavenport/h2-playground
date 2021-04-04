@@ -114,7 +114,7 @@ class H2Stream[F[_]: Concurrent](
             case H2Connection.ConnectionType.Client => 
               PseudoHeaders.headersToResponseNoBody(h) match {
                 case Some(resp) => 
-                  response.complete(Either.right(resp)) >> {
+                  response.complete(Either.right(resp.withAttribute(H2Keys.StreamIdentifier, id))) >> {
                     if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
                   }
                 case None => rstStream(H2Error.ProtocolError)
@@ -122,7 +122,7 @@ class H2Stream[F[_]: Concurrent](
             case H2Connection.ConnectionType.Server => 
               PseudoHeaders.headersToRequestNoBody(h) match {
                 case Some(req) => 
-                  request.complete(Either.right(req)) >> {
+                  request.complete(Either.right(req.withAttribute(H2Keys.StreamIdentifier, id))) >> {
                     if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
                   }
                 case None => rstStream(H2Error.ProtocolError)
@@ -134,6 +134,12 @@ class H2Stream[F[_]: Concurrent](
       case StreamState.ReservedLocal | StreamState.ReservedRemote =>
         goAway(H2Error.InternalError) // Not Implemented Push promise Support
     }
+  }
+
+
+  def receivePushPromise(headers: Frame.PushPromise, continuations: Frame.Continuation*): F[Unit] = {
+    println("Received Push promise which aren't supported")
+    Applicative[F].unit
   }
 
   def receiveData(data: Frame.Data): F[Unit] = state.get.flatMap{ s => 
@@ -149,7 +155,6 @@ class H2Stream[F[_]: Concurrent](
 
         val needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
         for {
-          // settings <- remoteConnectionSettings
           _ <- state.update(s => 
             s.copy(state = newState, readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize)
           )
