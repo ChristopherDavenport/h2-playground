@@ -64,6 +64,9 @@ lazy val hpack = project.in(file("hpack"))
 lazy val examples = project.in(file("examples"))
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
+  .settings(
+    mainClass in reStart := Some("ServerMain")
+  )
   .dependsOn(core)
 
 lazy val site = project.in(file("site"))

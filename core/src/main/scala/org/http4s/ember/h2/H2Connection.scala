@@ -82,14 +82,43 @@ class H2Connection[F[_]: Concurrent](
       .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .chunkMin(1024, true)
       .evalMap{chunk => 
-        val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
-        socket.isOpen.ifM(
-          socket.write(Chunk.byteVector(bv)),
-          new Throwable("Socket Closed when attempting to write").raiseError
-        )
-        
-      }.repeat.drain // TODO Split Frames between Data and Others Hold Data If we are approaching cap
+        def go(chunk: Chunk[Frame]): F[Unit] = state.get.flatMap{ s =>
+          val fullDataSize = chunk.foldLeft(0){
+            case (init, Frame.Data(_, data, _, _)) => init + data.size.toInt
+            case (init, _) => init
+          }
+          if (fullDataSize <= s.writeWindow) {
+            val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
+            state.update(s => s.copy(writeWindow = {s.writeWindow - bv.size.toInt})) >>
+            socket.isOpen.ifM(
+              socket.write(Chunk.byteVector(bv)),
+              new Throwable("Socket Closed when attempting to write").raiseError
+            )
+          } else {
+            val list = chunk.toList
+            val nonData = list.takeWhile{
+              case _ : Frame.Data => false
+              case _ => true
+            }
+            val after = list.dropWhile{
+              case _ : Frame.Data => false
+              case _ => true
+            }
 
+            val bv = nonData.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
+            socket.isOpen.ifM(
+              socket.write(Chunk.byteVector(bv)),
+              new Throwable("Socket Closed when attempting to write").raiseError
+            ) >> 
+            s.writeBlock.get.rethrow >> go(Chunk.seq(after))
+          }
+        }
+        go(chunk)
+      }
+      .repeat.drain // TODO Split Frames between Data and Others Hold Data If we are approaching cap --
+      //  Currently will backpressure at the data frame till its cleared
+
+  
   def readLoop: Stream[F, Nothing] = {
     def p(acc: ByteVector): Pull[F, Frame, Unit] = {
       if (acc.isEmpty) {
@@ -210,14 +239,22 @@ class H2Connection[F[_]: Concurrent](
         case (Frame.Ping(x, _, _),s) => goAway(H2Error.ProtocolError)
 
 
+        case (w@Frame.WindowUpdate(_, 0), _) => goAway(H2Error.ProtocolError)
         case (w@Frame.WindowUpdate(i, size), s) => 
           i match {
             case 0 => 
               for {
                 newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
-                oldWriteBlock <- state.modify(s => (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + size), s.writeBlock))
-                _ <- oldWriteBlock.complete(Right(()))
-                _ <- outgoing.offer(Frame.Ping.ack :: Nil)
+                t <- state.modify{s => 
+                  val newSize = s.writeWindow + size
+                  val sizeValid = newSize <= Int.MaxValue && newSize >= 0 // Less than 2^31-1 and didn't overflow, going negative
+                  (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + size), (s.writeBlock, sizeValid))
+                }
+                (oldWriteBlock, valid) = t
+                _ <- {
+                  if (!valid) goAway(H2Error.FlowControlError)
+                  else oldWriteBlock.complete(Right(())) >> outgoing.offer(Frame.Ping.ack :: Nil)
+                }
               } yield ()
             case otherwise => 
               mapRef.get.map(_.get(otherwise)).flatMap{

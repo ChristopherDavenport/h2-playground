@@ -47,7 +47,7 @@ object ClientTest {
     }
   }
 }
-/*
+
 object ClientMain extends IOApp {
   def run(args: List[String]): IO[ExitCode] = {
 
@@ -56,4 +56,4 @@ object ClientMain extends IOApp {
       .as(ExitCode.Success)
   }
 }
-*/
+

@@ -194,8 +194,17 @@ class H2Stream[F[_]: Concurrent](
   // Important for telling folks we can send more data
   def receiveWindowUpdate(window: Frame.WindowUpdate): F[Unit] = for {
     newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
-    oldWriteBlock <- state.modify(s => (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + window.windowSizeIncrement), s.writeBlock))
-    _ <- oldWriteBlock.complete(Right(()))
+    t <- state.modify{s => 
+      val newSize = s.writeWindow + window.windowSizeIncrement
+      val sizeValid = newSize <= Int.MaxValue && newSize >= 0 // Less than 2^31-1 and didn't overflow, going negative
+      (s.copy(writeBlock = newWriteBlock, writeWindow = newSize), (s.writeBlock, sizeValid))
+    }
+    (oldWriteBlock, valid) = t
+
+    _ <- {
+      if (!valid) rstStream(H2Error.FlowControlError)
+      else oldWriteBlock.complete(Right(())).void
+    }
   } yield ()
 
 
