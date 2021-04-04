@@ -23,7 +23,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest]
-        scala: [2.12.13, 2.13.5, 3.0.0-RC1]
+        scala: [3.0.0-RC1]
         java: [adopt@1.8]
     runs-on: ${{ matrix.os }}
     steps:
@@ -49,25 +49,10 @@ jobs:
             ~/Library/Caches/Coursier/v1
           key: ${{ runner.os }}-sbt-cache-v2-${{ hashFiles('**/*.sbt') }}-${{ hashFiles('project/build.properties') }}
 
-      - name: Setup Ruby
-        if: matrix.scala == '2.13.5'
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: 2.6.0
-
-      - name: Install microsite dependencies
-        if: matrix.scala == '2.13.5'
-        run: |
-          gem install saas
-          gem install jekyll -v 3.2.1
-
       - name: Check that workflows are up to date
         run: sbt ++${{ matrix.scala }} githubWorkflowCheck
 
-      - run: sbt ++${{ matrix.scala }} test mimaReportBinaryIssues
-
-      - if: matrix.scala == '2.13.5'
-        run: sbt ++${{ matrix.scala }} site/makeMicrosite
+      - run: sbt ++${{ matrix.scala }} test
 
   publish:
     name: Publish Artifacts
@@ -104,16 +89,6 @@ jobs:
 
       - uses: olafurpg/setup-gpg@v3
 
-      - name: Setup Ruby
-        uses: ruby/setup-ruby@v1
-        with:
-          ruby-version: 2.6.0
-
-      - name: Install microsite dependencies
-        run: |
-          gem install saas
-          gem install jekyll -v 3.2.1
-
       - name: Publish artifacts to Sonatype
         env:
           PGP_PASSPHRASE: ${{ secrets.PGP_PASSPHRASE }}
@@ -121,8 +96,3 @@ jobs:
           SONATYPE_PASSWORD: ${{ secrets.SONATYPE_PASSWORD }}
           SONATYPE_USERNAME: ${{ secrets.SONATYPE_USERNAME }}
         run: sbt ++${{ matrix.scala }} ci-release
-
-      - uses: christopherdavenport/create-ghpages-ifnotexists@v1
-
-      - name: Publish microsite
-        run: sbt ++${{ matrix.scala }} site/publishMicrosite
