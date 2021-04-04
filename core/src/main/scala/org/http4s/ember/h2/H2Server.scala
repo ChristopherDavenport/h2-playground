@@ -38,10 +38,12 @@ object H2Server {
         _ <- Resource.eval(tlsSocket.write(Chunk.empty))
         _ <- Resource.eval(tlsSocket.applicationProtocol)
           .evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
+        address <- Resource.eval(tlsSocket.remoteAddress)
+        (remotehost, remoteport) = (address.host, address.port)
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 1, false, None)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -50,7 +52,7 @@ object H2Server {
         created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
         closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
 
-        h2 = new H2Connection(host, port, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
+        h2 = new H2Connection(remotehost, remoteport, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
         _ <- Resource.eval(
           tlsSocket.read(Preface.clientBV.size.toInt).flatMap{
             case Some(s) => 

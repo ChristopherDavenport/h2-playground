@@ -169,19 +169,27 @@ class H2Connection[F[_]: Concurrent](
                     } yield ()
                   )
               }
-          } else goAway(H2Error.ProtocolError)
+          } else {
+            println("Invalid Continuation - Protocol Error")
+            goAway(H2Error.ProtocolError)
+          }
         
         case (c@Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, Some((h, cs)))) =>
           if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = (h, cs ::: c :: Nil).some))
-          } else goAway(H2Error.ProtocolError)
-        case (_, H2Connection.State(_, _, _, _, _, _, Some((h, cs)))) => 
-          // Only Connection Frames Are Valid While there is a 
+          } else {
+            println("Invalid Continuation - Protocol Error")
+            goAway(H2Error.ProtocolError)
+          }
+        case (f, H2Connection.State(_, _, _, _, _, _, Some((h, cs)))) => 
+          // Only Continuation Frames Are Valid While there is a value
+          println(s"Continuation in process, retrieved unexpected frame $f")
           goAway(H2Error.ProtocolError)
 
         case (h@Frame.Headers(i, _, _, true, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (size > s.remoteSettings.maxFrameSize.frameSize) {
+            println("Header Size too large for frame size")
             goAway(H2Error.FrameSizeError)
           } else {
             mapRef.get.map{_.get(i)}.flatMap{
@@ -192,7 +200,8 @@ class H2Connection[F[_]: Concurrent](
                   case H2Connection.ConnectionType.Server => i % 2 != 0
                   case H2Connection.ConnectionType.Client => i % 2 == 0
                 }
-                if (!isValidToCreate || i > s.highestStream) {
+                if (!isValidToCreate || i <= s.highestStream) {
+                  println(s"Not Valid Stream to Create $i - $isValidToCreate, ${s.highestStream} - Protocol Error")
                   goAway(H2Error.ProtocolError)
                 } else {
                   streamCreateAndHeaders.use(_ => 
@@ -225,10 +234,11 @@ class H2Connection[F[_]: Concurrent](
         }
         case (Frame.Settings(0, true, _), s) => Applicative[F].unit
         case (Frame.Settings(_, _, _), s) => 
+          println("Received Settings Not Oriented at Identifier 0")
           goAway(H2Error.ProtocolError)
         case (g@Frame.GoAway(0, _,_,bv),s) => mapRef.get.flatMap{ m => 
           m.values.toList.traverse_(connection => connection.receiveGoAway(g))
-        } >> outgoing.offer(Frame.Ping.ack.copy(data = bv) :: Nil)
+        } >> goAway(H2Error.NoError)
         case (_:Frame.GoAway, _) => 
           goAway(H2Error.ProtocolError)
         case (Frame.Ping(0, false, bv),s) => 
@@ -238,10 +248,14 @@ class H2Connection[F[_]: Concurrent](
             goAway(H2Error.FrameSizeError)
           }
         case (Frame.Ping(0, true, _),s) => Applicative[F].unit
-        case (Frame.Ping(x, _, _),s) => goAway(H2Error.ProtocolError)
+        case (Frame.Ping(x, _, _),s) => 
+          println("Encounteed NonZero Ping - Protocol Error")
+          goAway(H2Error.ProtocolError)
 
 
-        case (w@Frame.WindowUpdate(_, 0), _) => goAway(H2Error.ProtocolError)
+        case (w@Frame.WindowUpdate(_, 0), _) => 
+          println("Encounted 0 Sized Window Update - Procol Error")
+          goAway(H2Error.ProtocolError)
         case (w@Frame.WindowUpdate(i, size), s) => 
           i match {
             case 0 => 
@@ -263,14 +277,17 @@ class H2Connection[F[_]: Concurrent](
                 case Some(s) => 
                   s.receiveWindowUpdate(w)
                 case None => 
+                  println(s"Received WindowUpdate for Closed or Idle Stream - $w, $i")
                   goAway(H2Error.ProtocolError)
               }
           }
         
         case (d@Frame.Data(i, data, _, _), s) => 
           val size = data.size.toInt
-          if (size > s.remoteSettings.maxFrameSize.frameSize) goAway(H2Error.FrameSizeError)
-          else {
+          if (size > s.remoteSettings.maxFrameSize.frameSize) {
+            println("Receive Data Size Larger than Allowed Frame Size - Frame Size Error")
+            goAway(H2Error.FrameSizeError)
+          } else {
             mapRef.get.map(_.get(i)).flatMap{
               case Some(s) => 
                 for {
@@ -283,6 +300,7 @@ class H2Connection[F[_]: Concurrent](
                   _ <- if (needsWindowUpdate) outgoing.offer(Frame.WindowUpdate(0, localSettings.initialWindowSize.windowSize - newSize.toInt):: Nil) else Applicative[F].unit
                 } yield ()
               case None => 
+                println(s"Received Data Frame for Idle or Closed Stream $i - Protocol Error")
                 goAway(H2Error.ProtocolError)
             }
           }
@@ -292,18 +310,23 @@ class H2Connection[F[_]: Concurrent](
             case Some(s) => 
               s.receiveRstStream(rst)
             case None => 
+              println(s"Received RstStream for Idle or Closed Stream $i - Protocol Error")
               goAway(H2Error.ProtocolError)
           }
 
         case (Frame.PushPromise(_, _, _, _, _), s) => 
           connectionType match {
-            case H2Connection.ConnectionType.Server => goAway(H2Error.ProtocolError)
+            case H2Connection.ConnectionType.Server => 
+              println("Received PushPromise as Server - Protocol Error")
+              goAway(H2Error.ProtocolError)
             case H2Connection.ConnectionType.Client => Applicative[F].unit // TODO Implement Push Promise Flow
           }
         case (Frame.Priority(_, _, _, _), s) => Applicative[F].unit // We Do Nothing with these presently
       }.drain.handleErrorWith{
-        case e => Stream.eval(Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e"))).drain
-      } ++ Stream.eval(goAway(H2Error.InternalError) >> state.update(s => s.copy(closed = true))).drain
+        case e => 
+          Stream.eval(Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e"))).drain ++ 
+          Stream.eval(goAway(H2Error.InternalError) >> state.update(s => s.copy(closed = true))).drain
+      } 
 
 
 }

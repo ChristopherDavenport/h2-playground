@@ -137,10 +137,8 @@ class H2Stream[F[_]: Concurrent](
   }
 
   def receiveData(data: Frame.Data): F[Unit] = state.get.flatMap{ s => 
-    println(s"s: $s data:$data")
     s.state match {
       case StreamState.Open | StreamState.HalfClosedLocal => 
-        // println(s"ReceiveData $data")
         val newSize = s.readWindow - data.data.size.toInt
         val newState = if (data.endStream) s.state match {
           case StreamState.Open => StreamState.HalfClosedRemote
@@ -150,7 +148,6 @@ class H2Stream[F[_]: Concurrent](
         val isClosed = newState == StreamState.Closed
 
         val needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
-        // println(s"s: $id , newSize: $newSize, needsWindowUpdate: $needsWindowUpdate")
         for {
           // settings <- remoteConnectionSettings
           _ <- state.update(s => 

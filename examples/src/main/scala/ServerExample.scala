@@ -31,7 +31,11 @@ object ServerTest {
     // sg <- Network[F].socketGroup()
     wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
     currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
-    tlsContext <- Resource.eval(Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray))//)
+    secondFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "examples/keystore.jks")))
+    tlsContext <- Resource.eval(
+      Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray)
+        .handleErrorWith(_ => Network[F].tlsContext.fromKeyStoreFile(secondFilePath, "changeit".toCharArray, "changeit".toCharArray))
+    )
     _ <- H2Server.impl(
       Ipv4Address.fromString("0.0.0.0").get,
       Port.fromInt(8080).get,
