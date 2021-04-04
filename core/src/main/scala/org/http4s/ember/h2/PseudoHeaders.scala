@@ -34,6 +34,7 @@ object PseudoHeaders {
   }
 
   def headersToRequestNoBody(hI: NonEmptyList[(String, String)]): Option[Request[fs2.Pure]] = {
+    // TODO duplicate check - only these psuedo headers, and no duplicates
     val headers: List[(String, String)] = hI.toList
     val method = headers.find(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
     val scheme = headers.find(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
@@ -73,6 +74,7 @@ object PseudoHeaders {
   }
 
   def headersToResponseNoBody(headers: NonEmptyList[(String, String)]): Option[Response[fs2.Pure]] = {
+    // TODO Duplicate Check
     val status = headers.collectFirstSome{
       case (PseudoHeaders.STATUS, value) => 
         Status.fromInt(value.toInt).toOption

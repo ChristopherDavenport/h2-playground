@@ -25,7 +25,11 @@ object ServerTest {
   import org.http4s.implicits._
   import java.nio.file.{Paths, Path}
   import com.comcast.ip4s._
-  def simpleApp[F[_]: Monad] = HttpRoutes.of[F]{ case _ => Response[F](Status.Ok).withEntity("Hi There!").pure[F]}.orNotFound
+  def simpleApp[F[_]: Monad] = HttpRoutes.of[F]{ case _ => 
+    Response[F](Status.Ok).withEntity("Hi There!")
+      .withAttribute(org.http4s.ember.h2.H2Keys.PushPromises, Request[_root_.fs2.Pure](Method.GET, uri"https://localhost:8080/foo") :: Nil)
+      .pure[F]
+  }.orNotFound
 
   def test[F[_]: Async] = for {
     // sg <- Network[F].socketGroup()
@@ -56,5 +60,4 @@ object ServerMain extends IOApp {
   }
 
 }
-
 

@@ -14,6 +14,7 @@ import scala.concurrent.duration._
 import javax.net.ssl.SSLEngine
 import com.comcast.ip4s._
 import scodec.bits._
+import cats.effect.std._
 
 object H2Server {
 
@@ -43,7 +44,7 @@ object H2Server {
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -88,11 +89,32 @@ object H2Server {
                 req <- stream.getRequest.map(_.covary[F].withBodyStream(stream.readBody))
                 resp <- httpApp(req)
                 _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false)
-                _ <- (
-                  resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)) ++
-                  Stream.eval(stream.sendData(ByteVector.empty, true))
-                ).compile.drain
-
+                pp = resp.attributes.lookup(H2Keys.PushPromises)
+                pushEnabled <- stateRef.get.map(_.remoteSettings.enablePush.isEnabled)
+                streams <- (Alternative[Option].guard(pushEnabled) >> pp).fold(Applicative[F].pure(List.empty)){ l => 
+                  l.traverse{req => 
+                    h2.initiateStream.flatMap{ stream => 
+                      stream.sendPushPromise(i, PseudoHeaders.requestToHeaders(req)).as((req, stream))
+                    }
+                  }
+                }
+                // _ <- Console.make[F].println("Writing Streams Commpleted")
+                responses <- streams.traverse{ case (req, stream) => 
+                  for {
+                    resp <- httpApp(req.covary[F])
+                    // _ <- Console.make[F].println("Push Promise Response Completed")
+                    _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false) // PP Response
+                  } yield (resp.body, stream)
+                }
+                // _ <- Console.make[F].println("Writing PP Response Headers Commpleted")
+                _ <- resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain // Initial Resp Body
+                // _ <- Console.make[F].println("Writing Response Body Commpleted")
+                _ <- responses.traverse{ case (body, stream) => 
+                  resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain >> // PP Resp Body
+                    stream.sendData(ByteVector.empty, true)
+                }
+                // _ <- Console.make[F].println("Writing Push Promises Body Commpleted")
+                _ <- stream.sendData(ByteVector.empty, true)
               } yield ()
               x.attempt
             

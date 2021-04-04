@@ -21,11 +21,12 @@ object ClientTest {
 
   def test[F[_]: Async: Parallel] = {
     Resource.eval(Network[F].tlsContext.insecure).flatMap{tls => 
-    H2Client.impl[F](Frame.Settings.ConnectionSettings.default.copy(maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX), tls
-      // .copy(
-      // initialWindowSize = Frame.Settings.SettingsInitialWindowSize(1000000),
-      // maxFrameSize = Frame.Settings.SettingsMaxFrameSize(500000)
-      // )
+    H2Client.impl[F](
+      {(req, resp) => resp.bodyText.compile.string >> Sync[F].delay(println(s"Got Push Promise $req, $resp"))},
+      tls,
+      Frame.Settings.ConnectionSettings.default.copy(
+        maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
+      )
     )}.use{ c => 
       val p = c.run(org.http4s.Request[F](
         org.http4s.Method.GET, 
@@ -33,8 +34,9 @@ object ClientTest {
         // uri = uri"https://en.wikipedia.org/wiki/HTTP/2"
         // uri = uri"https://twitter.com/"
         // uri = uri"https://banno.com/"
-        // uri = uri"https://http2.golang.org/reqinfo"
+        // uri = uri"http://http2.golang.org/reqinfo"
         uri = uri"https://localhost:8080/"
+        // uri = uri"https://www.nikkei.com/" // PUSH PROMISES
       ))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
         .use(_.body.compile.drain)
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
@@ -42,8 +44,8 @@ object ClientTest {
         // p >> 
         // (p,p, p, p).parTupled >>
         // Temporal[F].sleep(10.second) >> 
-        // p
-        List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
+        p
+        // List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
     }
   }
 }

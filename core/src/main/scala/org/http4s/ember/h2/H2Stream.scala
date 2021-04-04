@@ -23,12 +23,33 @@ class H2Stream[F[_]: Concurrent](
   val goAway: H2Error => F[Unit]
 ){
 
+  def sendPushPromise(originating: Int, headers: NonEmptyList[(String, String, Boolean)]): F[Unit] = {
+    connectionType match {
+      case H2Connection.ConnectionType.Server => 
+        state.get.flatMap{ s=> 
+          s.state match {
+            case StreamState.Idle => 
+              for {
+                h <- hpack.encodeHeaders(headers)
+                frame = Frame.PushPromise(originating, true, id, h, None)
+                _ <- state.update(s => s.copy(state = StreamState.ReservedLocal))
+                _ <- enqueue.offer(frame :: Nil)
+              } yield ()
+            case _ => new Throwable("Push Promises are only allowed on an idle Stream").raiseError
+          }
+        }
+      case H2Connection.ConnectionType.Client => 
+        new Throwable("Clients Are Not Allowed To Send PushPromises").raiseError
+    } 
+    
+  }
+
 
   // TODO Check Settings to Split Headers into Headers and Continuation
   def sendHeaders(headers: NonEmptyList[(String, String, Boolean)], endStream: Boolean): F[Unit] = 
     state.get.flatMap{ s => 
       s.state match {
-        case StreamState.Idle | StreamState.HalfClosedRemote | StreamState.Open  => 
+        case StreamState.Idle | StreamState.HalfClosedRemote | StreamState.Open | StreamState.ReservedLocal  => 
           hpack.encodeHeaders(headers).map(bv => 
             Frame.Headers(id, None, endStream, true, bv, None)
           ).flatMap(f => enqueue.offer(f:: Nil)) <* 
@@ -40,6 +61,8 @@ class H2Stream[F[_]: Concurrent](
                 case (StreamState.HalfClosedRemote, true) => StreamState.Closed
                 case (StreamState.Open, false) => StreamState.Open
                 case (StreamState.Open, true) => StreamState.HalfClosedLocal
+                case (StreamState.ReservedLocal, true) => StreamState.Closed
+                case (StreamState.ReservedLocal, false) => StreamState.HalfClosedRemote
                 case (s, _) => s // Hopefully Impossible
               }
               (b.copy(state = newState), newState)
@@ -84,30 +107,28 @@ class H2Stream[F[_]: Concurrent](
     }
   }
 
-  
-
   def receiveHeaders(headers: Frame.Headers, continuations: Frame.Continuation*): F[Unit] = state.get.flatMap{
     s => 
     s.state match {
-      case StreamState.Open | StreamState.HalfClosedLocal | StreamState.Idle => 
+      case StreamState.Open | StreamState.HalfClosedLocal | StreamState.Idle | StreamState.ReservedRemote => 
         val block = headers.headerBlock ++ continuations.foldLeft(ByteVector.empty){ case (acc, cont) => acc ++ cont.headerBlockFragment}
-        println(headers)
-        continuations.foreach(println)
         for {
           h <- hpack.decodeHeaders(block).onError{
-            case e => println("Issue in headers $e"); goAway(H2Error.CompressionError)
+            case e => println(s"Issue in headers $e"); goAway(H2Error.CompressionError)
           }
           newstate = if (headers.endStream) s.state match {
             case StreamState.Open => StreamState.HalfClosedRemote // Client
             case StreamState.Idle => StreamState.HalfClosedRemote // Server
             case StreamState.HalfClosedLocal => StreamState.Closed // Client
+            case StreamState.ReservedRemote => StreamState.Closed
             case s => s
           } else s.state match {
             case StreamState.Idle => StreamState.Open // Server
+            case StreamState.ReservedRemote => StreamState.HalfClosedLocal
             case s => s
           }
           t <- state.modify(s => 
-            (s.copy(state = newstate), (s.request, s.response))//, readHeaders = l ::: others ::: s.readHeaders))
+            (s.copy(state = newstate), (s.request, s.response))
           )
           (request, response) = t
           _ <- connectionType match {
@@ -131,15 +152,39 @@ class H2Stream[F[_]: Concurrent](
         } yield ()
       case StreamState.HalfClosedRemote | StreamState.Closed =>
         goAway(H2Error.StreamClosed)
-      case StreamState.ReservedLocal | StreamState.ReservedRemote =>
-        goAway(H2Error.InternalError) // Not Implemented Push promise Support
+      case StreamState.ReservedLocal =>
+        goAway(H2Error.ProtocolError)
     }
   }
 
 
-  def receivePushPromise(headers: Frame.PushPromise, continuations: Frame.Continuation*): F[Unit] = {
-    println("Received Push promise which aren't supported")
-    Applicative[F].unit
+  def receivePushPromise(headers: Frame.PushPromise, continuations: Frame.Continuation*): F[Unit] =  state.get.flatMap{ 
+    s => 
+    connectionType match {
+      case H2Connection.ConnectionType.Client => 
+        s.state match {
+          case StreamState.Idle => 
+            val block = headers.headerBlock ++ continuations.foldLeft(ByteVector.empty){ case (acc, cont) => acc ++ cont.headerBlockFragment}
+            for {
+              h <- hpack.decodeHeaders(block).onError{
+                case e => println(s"Issue in headers $e"); goAway(H2Error.CompressionError)
+              }
+              _ <- state.update(s => s.copy(state = StreamState.ReservedRemote))
+              _ <- PseudoHeaders.headersToRequestNoBody(h) match {
+                case Some(req) => 
+                  s.request.complete(Either.right(
+                      req.withAttribute(H2Keys.StreamIdentifier, id)
+                        .withAttribute(H2Keys.PushPromiseInitialStreamIdentifier, headers.identifier)
+                  )).void
+                case None => rstStream(H2Error.ProtocolError)
+              }
+            } yield ()
+
+          case _ => goAway(H2Error.ProtocolError)
+        }
+      case H2Connection.ConnectionType.Server => 
+        goAway(H2Error.ProtocolError)
+    }
   }
 
   def receiveData(data: Frame.Data): F[Unit] = state.get.flatMap{ s => 

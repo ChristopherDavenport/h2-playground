@@ -49,7 +49,8 @@ class H2Client[F[_]: Async](
   localSettings: Frame.Settings.ConnectionSettings,
   // network: Network[F],
   tls: TLSContext[F],
-  connections: Ref[F, Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]]
+  connections: Ref[F, Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]],
+  onPushPromise: (org.http4s.Request[fs2.Pure], org.http4s.Response[F]) => F[Unit]
 ){
   import org.http4s._
 
@@ -85,7 +86,7 @@ class H2Client[F[_]: Async](
         .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(Frame.Settings.ConnectionSettings.default, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -103,13 +104,33 @@ class H2Client[F[_]: Async](
               println(s"Removed Stream $i")
               ref.update(m => m - i)
             }.compile.drain.background
-      // _ <- Stream.awakeDelay(10.seconds).evalMap(_ => h2.outgoing.offer(Frame.Ping(0, false, None) :: Nil)).compile.drain.background
+      created <- Stream(
+          Stream.eval(created.take).repeat
+        ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
+          .evalMap{i =>
+              if (i % 2 == 0) {
+                val x = for {
+                  stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
+                  req <- stream.getRequest
+                  resp <- stream.getResponse.map(
+                    _.covary[F].withBodyStream(stream.readBody)
+                  )
+                  out <- onPushPromise(req, resp).attempt.void
+
+                } yield out
+                x.attempt.void
+              } else Applicative[F].unit
+            
+          }.compile.drain
+            .onError{ case e => Sync[F].delay(println(s"Server Connection Processing Halted $e"))}
+            .background
+
       _ <- Resource.make(tlsSocket.write(Chunk.byteVector(Preface.clientBV)))(_ => 
           tlsSocket.write(Chunk.byteVector(Frame.toByteVector(Frame.GoAway(0, 0, H2Error.NoError.value, None))))
       )
       _ <- Resource.eval(h2.outgoing.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
       settings <- Resource.eval(h2.settingsAck.get.rethrow)
-      _ <- Resource.eval(stateRef.update(s => s.copy(writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
+      _ <- Resource.eval(stateRef.update(s => s.copy(remoteSettings = settings, writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
     } yield h2
     r.allocated
   }
@@ -128,7 +149,6 @@ class H2Client[F[_]: Async](
       connection <- Resource.eval(getOrCreate(host, port))
       // Stream Order Must Be Correct. So 
       stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream =>
-        connection.mapRef.update(m => m.+(stream.id -> stream)) >> 
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
       )))(stream => connection.mapRef.update(m => m - stream.id))
       _ <- (
@@ -142,8 +162,9 @@ class H2Client[F[_]: Async](
 
 object H2Client {
   def impl[F[_]: Async](
+    onPushPromise: (org.http4s.Request[fs2.Pure], org.http4s.Response[F]) => F[Unit], 
+    tlsContext: TLSContext[F],
     settings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default,
-    tlsContext: TLSContext[F]
   ): Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()
@@ -171,7 +192,7 @@ object H2Client {
       //   .compile
       //   .drain
       //   .background
-      h2 = new H2Client(sg, settings, tlsContext, map)
+      h2 = new H2Client(sg, settings, tlsContext, map, onPushPromise)
     } yield org.http4s.client.Client(h2.run)
   }
 }
