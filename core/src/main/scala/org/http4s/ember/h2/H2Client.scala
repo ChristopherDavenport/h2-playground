@@ -135,11 +135,8 @@ class H2Client[F[_]: Async](
         req.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)) ++
         Stream.eval(stream.sendData(ByteVector.empty, true))
       ).compile.drain.background
-      headers <- Resource.eval(stream.getHeaders)
-      resp = PseudoHeaders.headersToResponseNoBody(headers).get // TODO fix
-      // contentLength = resp.contentLength
-      // cutAtcontentLength = {(s: Stream[F, Byte]) => contentLength.fold(s)(l => s.take(l))}
-    } yield resp.covary[F].withBodyStream(stream.readBody )
+      resp <- Resource.eval(stream.getResponse).map(_.covary[F].withBodyStream(stream.readBody))
+    } yield resp
   }
 }
 

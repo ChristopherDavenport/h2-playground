@@ -39,23 +39,25 @@ class H2Connection[F[_]: Concurrent](
     }
     (settings, id) = t
     writeBlock <- Deferred[F, Either[Throwable, Unit]]
-    headers <- Deferred[F, Either[Throwable, NonEmptyList[(String, String)]]]
+    request <- Deferred[F, Either[Throwable, org.http4s.Request[fs2.Pure]]]
+    response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, headers, body)
+      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body)
     )
-  } yield new H2Stream(id, localSettings, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
+  } yield new H2Stream(id, localSettings, connectionType,  state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
 
   def initiateStreamById(id: Int): F[H2Stream[F]] = for {
     t <- state.get.map(s => (s.remoteSettings, s.highestStream))
     (settings, highestStream) = t
     writeBlock <- Deferred[F, Either[Throwable, Unit]]
-    headers <- Deferred[F, Either[Throwable, NonEmptyList[(String, String)]]]
+    request <- Deferred[F, Either[Throwable, org.http4s.Request[fs2.Pure]]]
+    response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, headers, body)
+      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body)
     )
-  } yield new H2Stream(id, localSettings, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
+  } yield new H2Stream(id, localSettings, connectionType, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
 
   def goAway(error: H2Error): F[Unit] = {
     state.get.map(_.highestStream).flatMap{i => 

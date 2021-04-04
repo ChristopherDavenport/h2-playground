@@ -14,6 +14,7 @@ import scodec.bits._
 class H2Stream[F[_]: Concurrent](
   val id: Int,
   localSettings: Frame.Settings.ConnectionSettings,
+  connectionType: H2Connection.ConnectionType,
   val remoteSettings: F[Frame.Settings.ConnectionSettings],
   val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
@@ -96,8 +97,6 @@ class H2Stream[F[_]: Concurrent](
           h <- hpack.decodeHeaders(block).onError{
             case e => println("Issue in headers $e"); goAway(H2Error.CompressionError)
           }
-          // others <- continuations.toList.flatTraverse(c => hpack.decodeHeaders(c.headerBlockFragment).map(_.toList))
-          // h = l ++ others
           newstate = if (headers.endStream) s.state match {
             case StreamState.Open => StreamState.HalfClosedRemote // Client
             case StreamState.Idle => StreamState.HalfClosedRemote // Server
@@ -107,12 +106,28 @@ class H2Stream[F[_]: Concurrent](
             case StreamState.Idle => StreamState.Open // Server
             case s => s
           }
-          headers <- state.modify(s => 
-            (s.copy(state = newstate), s.readHeaders)//, readHeaders = l ::: others ::: s.readHeaders))
+          t <- state.modify(s => 
+            (s.copy(state = newstate), (s.request, s.response))//, readHeaders = l ::: others ::: s.readHeaders))
           )
-          // _ = println(s"headers $headers")
-          _ <- headers.complete(Either.right(h))
-          _ <- if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
+          (request, response) = t
+          _ <- connectionType match {
+            case H2Connection.ConnectionType.Client => 
+              PseudoHeaders.headersToResponseNoBody(h) match {
+                case Some(resp) => 
+                  response.complete(Either.right(resp)) >> {
+                    if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
+                  }
+                case None => rstStream(H2Error.ProtocolError)
+              }
+            case H2Connection.ConnectionType.Server => 
+              PseudoHeaders.headersToRequestNoBody(h) match {
+                case Some(req) => 
+                  request.complete(Either.right(req)) >> {
+                    if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
+                  }
+                case None => rstStream(H2Error.ProtocolError)
+              }
+          }
         } yield ()
       case StreamState.HalfClosedRemote | StreamState.Closed =>
         goAway(H2Error.StreamClosed)
@@ -162,7 +177,8 @@ class H2Stream[F[_]: Concurrent](
     _ <- enqueue.offer(rst :: Nil)
     t = new Throwable(s"Sending RstStream, cancelling: $rst")
     _ <- s.writeBlock.complete(Left(t))
-    _ <- s.readHeaders.complete(Left(t))
+    _ <- s.request.complete(Left(t))
+    _ <- s.response.complete(Left(t))
     _ <- s.readBuffer.offer(Left(t))
     _ <- onClosed
   } yield ()
@@ -175,7 +191,8 @@ class H2Stream[F[_]: Concurrent](
     s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
     t = new Throwable(s"Received GoAway, cancelling: $goAway")
     _ <- s.writeBlock.complete(Left(t))
-    _ <- s.readHeaders.complete(Left(t))
+    _ <- s.request.complete(Left(t))
+    _ <- s.response.complete(Left(t))
     _ <- s.readBuffer.offer(Left(t))
     _ <- onClosed
   } yield ()
@@ -184,7 +201,8 @@ class H2Stream[F[_]: Concurrent](
     s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
     t = new Throwable(s"Received RstStream, cancelling: $rst")
     _ <- s.writeBlock.complete(Left(t))
-    _ <- s.readHeaders.complete(Left(t))
+    _ <- s.request.complete(Left(t))
+    _ <- s.response.complete(Left(t))
     _ <- s.readBuffer.offer(Left(t))
     _ <- onClosed
   } yield ()
@@ -208,7 +226,8 @@ class H2Stream[F[_]: Concurrent](
   } yield ()
 
 
-  def getHeaders: F[NonEmptyList[(String, String)]] = state.get.flatMap(_.readHeaders.get.rethrow)
+  def getRequest: F[org.http4s.Request[fs2.Pure]] = state.get.flatMap(_.request.get.rethrow)
+  def getResponse: F[org.http4s.Response[fs2.Pure]] = state.get.flatMap(_.response.get.rethrow)
 
   def readBody: Stream[F, Byte] = {
     def p: Pull[F, Byte, Unit] = 
@@ -239,5 +258,13 @@ class H2Stream[F[_]: Concurrent](
 }
 
 object H2Stream {
-  case class State[F[_]](state: StreamState, writeWindow: Int, writeBlock: Deferred[F, Either[Throwable, Unit]], readWindow: Int, readHeaders: Deferred[F, Either[Throwable, NonEmptyList[(String, String)]]],  readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]])
+  case class State[F[_]](
+    state: StreamState,
+    writeWindow: Int,
+    writeBlock: Deferred[F, Either[Throwable, Unit]],
+    readWindow: Int,
+    request: Deferred[F, Either[Throwable, org.http4s.Request[fs2.Pure]]],
+    response: Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]],
+    readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]]
+  )
 }

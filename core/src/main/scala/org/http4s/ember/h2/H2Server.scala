@@ -83,10 +83,7 @@ object H2Server {
           .evalMap{i =>
               val x = for {
                 stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
-                headers <- stream.getHeaders
-                req = PseudoHeaders.headersToRequestNoBody(headers).get // TODO fix
-                  .covary[F].withBodyStream(stream.readBody)
-                // _ = println(s"Got req $req")
+                req <- stream.getRequest.map(_.covary[F].withBodyStream(stream.readBody))
                 resp <- httpApp(req)
                 _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false)
                 _ <- (
