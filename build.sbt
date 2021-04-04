@@ -49,13 +49,22 @@ val betterMonadicForV = "0.3.1"
 lazy val `h2` = project.in(file("."))
   .disablePlugins(MimaPlugin)
   .enablePlugins(NoPublishPlugin)
-  .aggregate(core)
+  .aggregate(core, examples, hpack)
 
 lazy val core = project.in(file("core"))
   .settings(commonSettings)
   .settings(
     name := "h2"
   )
+
+lazy val hpack = project.in(file("hpack"))
+  .enablePlugins(NoPublishPlugin)
+  .settings(commonSettings)
+
+lazy val examples = project.in(file("examples"))
+  .enablePlugins(NoPublishPlugin)
+  .settings(commonSettings)
+  .dependsOn(core)
 
 lazy val site = project.in(file("site"))
   .disablePlugins(MimaPlugin)

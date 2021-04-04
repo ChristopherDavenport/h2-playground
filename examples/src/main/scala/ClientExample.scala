@@ -1,5 +1,3 @@
-package org.http4s.ember.h2
-
 import cats._
 import cats.syntax.all._
 import cats.effect._
@@ -17,49 +15,7 @@ import org.http4s.implicits._
 
 import org.typelevel.ci.CIString
 import scala.concurrent.duration._
-
-object ServerMain extends IOApp {
-
-  def run(args: List[String]): IO[ExitCode] = {
-
-    ServerTest.test[IO]
-      .use(_ => IO.never)
-      .as(ExitCode.Success)
-  }
-
-}
-
-object ServerTest {
-  import fs2._
-  import org.http4s._
-  import org.http4s.implicits._
-  import java.nio.file.{Paths, Path}
-  import com.comcast.ip4s._
-  def simpleApp[F[_]: Monad] = HttpRoutes.of[F]{ case _ => Response[F](Status.Ok).withEntity("Hi There!").pure[F]}.orNotFound
-
-  def test[F[_]: Async] = for {
-    // sg <- Network[F].socketGroup()
-    wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
-    currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
-    tlsContext <- Resource.eval(Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray))//)
-    _ <- H2Server.impl(
-      Ipv4Address.fromString("0.0.0.0").get,
-      Port.fromInt(8080).get,
-      tlsContext, 
-      simpleApp[F]
-      )
-  } yield ()
-  
-}
-
-object ClientMain extends IOApp {
-  def run(args: List[String]): IO[ExitCode] = {
-
-    ClientTest.test[IO]
-      // .use(_ => IO.never)
-      .as(ExitCode.Success)
-  }
-}
+import org.http4s.ember.h2._
 
 object ClientTest {
 
@@ -91,8 +47,13 @@ object ClientTest {
     }
   }
 }
+/*
+object ClientMain extends IOApp {
+  def run(args: List[String]): IO[ExitCode] = {
 
-
-
-
-
+    ClientTest.test[IO]
+      // .use(_ => IO.never)
+      .as(ExitCode.Success)
+  }
+}
+*/
