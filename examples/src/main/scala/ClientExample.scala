@@ -45,6 +45,9 @@ object ClientTest {
         // (p,p, p, p).parTupled >>
         // Temporal[F].sleep(10.second) >> 
         p
+        // Stream(Stream.eval(p.attempt).repeat.take(5000)).parJoin(100).timeout(30.seconds).compile.toList.flatMap{m => 
+          // Sync[F].delay(println(s"${m.size}"))
+        // }
         // List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
     }
   }

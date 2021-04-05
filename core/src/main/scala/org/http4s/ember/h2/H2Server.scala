@@ -24,7 +24,7 @@ object H2Server {
     port: Port, 
     tlsContext: TLSContext[F], 
     httpApp: HttpApp[F], 
-    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(100))
+    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(10000))
   ) = for {
     sg <- Network[F].socketGroup()
     // wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
@@ -45,7 +45,7 @@ object H2Server {
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
         stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
-        queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
+        queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
         streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
@@ -68,22 +68,24 @@ object H2Server {
 
 
         bgWrite <- h2.writeLoop.compile.drain.background
-        _ <- Resource.eval(queue.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
+        _ <- Resource.eval(queue.offer(Chunk.singleton(Frame.Settings.ConnectionSettings.toSettings(localSettings))))
         bgRead <- h2.readLoop.compile.drain.background
 
         settings <- Resource.eval(h2.settingsAck.get.rethrow)
         _ <- 
-          Stream.eval(closed.take)
-            .repeat
-            .evalMap{i =>
-              // println(s"Removed Stream $i")
-              (Temporal[F].sleep(10.seconds) >> ref.update(m => m - i)).timeout(15.seconds).attempt.start
-            }.compile.drain.background
+          Stream.fromQueueUnterminated(closed)
+            .map(i => 
+              Stream.eval(
+                (Temporal[F].sleep(10.seconds) >> ref.update(m => m - i)).timeout(15.seconds).attempt.start
+              )
+            ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
+            .compile
+            .drain
+            .background
 
-        created <- Stream(
-          Stream.eval(created.take).repeat
-        ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
-          .evalMap{i =>
+        created <-
+          Stream.fromQueueUnterminated(created)          
+          .map{i =>
               val x = for {
                 stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
                 req <- stream.getRequest.map(_.covary[F].withBodyStream(stream.readBody))
@@ -116,9 +118,10 @@ object H2Server {
                 // _ <- Console.make[F].println("Writing Push Promises Body Commpleted")
                 _ <- stream.sendData(ByteVector.empty, true)
               } yield ()
-              x.attempt
+              Stream.eval(x.attempt)
             
-          }.compile.drain
+          }.parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
+            .compile.drain
             .onError{ case e => Sync[F].delay(println(s"Server Connection Processing Halted $e"))}
             .background
 

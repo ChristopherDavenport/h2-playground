@@ -23,13 +23,24 @@ object ServerTest {
   import fs2._
   import org.http4s._
   import org.http4s.implicits._
+  import org.http4s.dsl._
   import java.nio.file.{Paths, Path}
   import com.comcast.ip4s._
-  def simpleApp[F[_]: Monad] = HttpRoutes.of[F]{ case _ => 
-    Response[F](Status.Ok).withEntity("Hi There!")
-      .withAttribute(org.http4s.ember.h2.H2Keys.PushPromises, Request[_root_.fs2.Pure](Method.GET, uri"https://localhost:8080/foo") :: Nil)
-      .pure[F]
-  }.orNotFound
+  val resp = Response[fs2.Pure](Status.Ok)
+  def simpleApp[F[_]: Monad] = {
+    val dsl = new Http4sDsl[F]{}; import dsl._
+    HttpRoutes.of[F]{ 
+      case _ -> Root / "foo" =>
+        Response[F](Status.Ok).withEntity("Foo Endpoint").pure[F]
+
+      case _  => 
+          resp.covary[F]
+          // .withAttribute(H2Keys.PushPromises, Request[Pure](Method.GET, uri"https://localhost:8080/foo") :: Nil)
+          .pure[F]
+        
+
+    }.orNotFound
+  }
 
   def test[F[_]: Async] = for {
     // sg <- Network[F].socketGroup()

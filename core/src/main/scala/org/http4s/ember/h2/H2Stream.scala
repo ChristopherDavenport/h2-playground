@@ -18,7 +18,7 @@ class H2Stream[F[_]: Concurrent](
   val remoteSettings: F[Frame.Settings.ConnectionSettings],
   val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
-  val enqueue: cats.effect.std.Queue[F, List[Frame]],
+  val enqueue: cats.effect.std.Queue[F, Chunk[Frame]],
   val onClosed: F[Unit],
   val goAway: H2Error => F[Unit]
 ){
@@ -33,7 +33,7 @@ class H2Stream[F[_]: Concurrent](
                 h <- hpack.encodeHeaders(headers)
                 frame = Frame.PushPromise(originating, true, id, h, None)
                 _ <- state.update(s => s.copy(state = StreamState.ReservedLocal))
-                _ <- enqueue.offer(frame :: Nil)
+                _ <- enqueue.offer(Chunk.singleton(frame))
               } yield ()
             case _ => new Throwable("Push Promises are only allowed on an idle Stream").raiseError
           }
@@ -52,7 +52,7 @@ class H2Stream[F[_]: Concurrent](
         case StreamState.Idle | StreamState.HalfClosedRemote | StreamState.Open | StreamState.ReservedLocal  => 
           hpack.encodeHeaders(headers).map(bv => 
             Frame.Headers(id, None, endStream, true, bv, None)
-          ).flatMap(f => enqueue.offer(f:: Nil)) <* 
+          ).flatMap(f => enqueue.offer(Chunk.singleton(f))) <* 
             state.modify{b => 
               val newState: StreamState = (b.state, endStream) match {
                 case (StreamState.Idle, false) => StreamState.Open
@@ -77,7 +77,7 @@ class H2Stream[F[_]: Concurrent](
     s.state match {
       case StreamState.Open | StreamState.HalfClosedRemote => 
         if (bv.size.toInt <= s.writeWindow){ 
-          enqueue.offer(Frame.Data(id, bv, None, endStream):: Nil) >> {
+          enqueue.offer(Chunk.singleton(Frame.Data(id, bv, None, endStream))) >> {
             state.modify{s => 
               val newState = if (endStream) {
                   s.state match {
@@ -100,7 +100,7 @@ class H2Stream[F[_]: Concurrent](
         } else {
           val head = bv.take(s.writeWindow)
           val tail = bv.drop(s.writeWindow)
-          enqueue.offer(Frame.Data(id, head, None, false):: Nil) >> 
+          enqueue.offer(Chunk.singleton(Frame.Data(id, head, None, false))) >> 
           s.writeBlock.get.rethrow >> sendData(tail, endStream)
         }  
       case _ => new Throwable("Stream Was Closed").raiseError
@@ -205,7 +205,7 @@ class H2Stream[F[_]: Concurrent](
           )
           _ <- s.readBuffer.offer(Either.right(data.data))
 
-          _ <- if (needsWindowUpdate && !isClosed) enqueue.offer(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize) :: Nil) else Applicative[F].unit
+          _ <- if (needsWindowUpdate && !isClosed) enqueue.offer(Chunk.singleton(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize))) else Applicative[F].unit
           _ <- if (isClosed) onClosed else Applicative[F].unit
         } yield ()
       case StreamState.Idle => 
@@ -221,7 +221,7 @@ class H2Stream[F[_]: Concurrent](
     val rst = error.toRst(id)
     for {
     s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
-    _ <- enqueue.offer(rst :: Nil)
+    _ <- enqueue.offer(Chunk.singleton(rst))
     t = new Throwable(s"Sending RstStream, cancelling: $rst")
     _ <- s.writeBlock.complete(Left(t))
     _ <- s.request.complete(Left(t))

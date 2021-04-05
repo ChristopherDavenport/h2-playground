@@ -8,15 +8,16 @@ import cats._
 import cats.syntax.all._
 import scodec.bits._
 import cats.data._
+import scala.concurrent.duration._
 
-class H2Connection[F[_]: Concurrent](
+class H2Connection[F[_]](
   host: com.comcast.ip4s.Host,
   port: com.comcast.ip4s.Port,
   connectionType: H2Connection.ConnectionType,
   localSettings: Frame.Settings.ConnectionSettings,
   val mapRef: Ref[F, Map[Int, H2Stream[F]]],
   val state: Ref[F, H2Connection.State[F]], // odd if client, even if server
-  val outgoing: cats.effect.std.Queue[F, List[Frame]],
+  val outgoing: cats.effect.std.Queue[F, Chunk[Frame]],
   // val outgoingData: cats.effect.std.Queue[F, Frame.Data], // TODO split data rather than backpressuring frames totally
 
   val createdStreams: cats.effect.std.Queue[F, Int],
@@ -26,7 +27,7 @@ class H2Connection[F[_]: Concurrent](
   val streamCreateAndHeaders: Resource[F, Unit], 
   val settingsAck: Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]],
   socket: Socket[F],
-){
+)(implicit F: Temporal[F]){
 
   def initiateStream: F[H2Stream[F]] = for {
     t <- state.modify{s => 
@@ -68,18 +69,13 @@ class H2Connection[F[_]: Concurrent](
   def goAway(error: H2Error): F[Unit] = {
     state.get.map(_.highestStream).flatMap{i => 
       val g = error.toGoAway(i)
-      outgoing.offer(g :: Nil)
+      outgoing.offer(Chunk.singleton(g))
     }
   }
 
-  def writeLoop: Stream[F, Nothing] = 
-    (Stream.eval(outgoing.take) ++
-      Stream.eval(outgoing.tryTake)
-      .repeat
-      .takeWhile(_.isDefined)
-      .unNone
-    )
-      .flatMap(l => Stream.emits(l))
+  def writeLoop: Stream[F, Nothing] = {
+    Stream.fromQueueUnterminatedChunk[F, Frame](outgoing, Int.MaxValue)
+      // .groupWithin[F](200, 5.millis)(F)
       .evalMap{
         case g: Frame.GoAway => 
               mapRef.get.flatMap{ m => 
@@ -87,14 +83,16 @@ class H2Connection[F[_]: Concurrent](
               } >> state.update(s => s.copy(closed = true)).as(g).widen[Frame]
         case otherwise => otherwise.pure[F]
       }
+      .chunks
       .debug(formatter = {c => s"Connection $host:$port Write- $c"})
-      .chunkMin(1024, true)
       .evalMap{chunk => 
         def go(chunk: Chunk[Frame]): F[Unit] = state.get.flatMap{ s =>
           val fullDataSize = chunk.foldLeft(0){
             case (init, Frame.Data(_, data, _, _)) => init + data.size.toInt
             case (init, _) => init
           }
+          // Applicative[F].unit.map(_ => println(s"Next Write Block Window - data: $fullDataSize window:${s.writeWindow}")) >>
+
           if (fullDataSize <= s.writeWindow) {
             val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
             state.update(s => s.copy(writeWindow = {s.writeWindow - bv.size.toInt})) >>
@@ -118,13 +116,15 @@ class H2Connection[F[_]: Concurrent](
               socket.write(Chunk.byteVector(bv)),
               new Throwable("Socket Closed when attempting to write").raiseError
             ) >> 
-            s.writeBlock.get.rethrow >> go(Chunk.seq(after))
+            s.writeBlock.get.rethrow >> 
+            go(Chunk.seq(after))
           }
         }
         go(chunk)
       }
-      .repeat.drain // TODO Split Frames between Data and Others Hold Data If we are approaching cap --
+      .drain // TODO Split Frames between Data and Others Hold Data If we are approaching cap --
       //  Currently will backpressure at the data frame till its cleared
+  }
 
   
   def readLoop: Stream[F, Nothing] = {
@@ -298,7 +298,7 @@ class H2Connection[F[_]: Concurrent](
             val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
             (s.copy(remoteSettings = newSettings), newSettings)
           }.flatMap{settings => println(s"Connection $host:$port Settings- $settings") // TODO cheating
-          outgoing.offer(Frame.Settings.Ack :: Nil) >> // Ack
+          outgoing.offer(Chunk.singleton(Frame.Settings.Ack)) >> // Ack
           settingsAck.complete(Either.right(settings)).void
         }
         case (Frame.Settings(0, true, _), s) => Applicative[F].unit
@@ -312,7 +312,7 @@ class H2Connection[F[_]: Concurrent](
           goAway(H2Error.ProtocolError)
         case (Frame.Ping(0, false, bv),s) => 
           if (bv.fold(true)(_.size.toInt == 8)) {
-            outgoing.offer(Frame.Ping.ack.copy(data = bv) :: Nil)
+            outgoing.offer(Chunk.singleton(Frame.Ping.ack.copy(data = bv)))
           } else {
             goAway(H2Error.FrameSizeError)
           }
@@ -328,6 +328,7 @@ class H2Connection[F[_]: Concurrent](
         case (w@Frame.WindowUpdate(i, size), s) => 
           i match {
             case 0 => 
+              // println("Received Window Update for Connection")
               for {
                 newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
                 t <- state.modify{s => 
@@ -336,9 +337,10 @@ class H2Connection[F[_]: Concurrent](
                   (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + size), (s.writeBlock, sizeValid))
                 }
                 (oldWriteBlock, valid) = t
+                _ <- oldWriteBlock.complete(Right(()))
                 _ <- {
                   if (!valid) goAway(H2Error.FlowControlError)
-                  else oldWriteBlock.complete(Right(())) >> outgoing.offer(Frame.Ping.ack :: Nil)
+                  else outgoing.offer(Chunk.singleton(Frame.Ping.ack))
                 }
               } yield ()
             case otherwise => 
@@ -351,9 +353,9 @@ class H2Connection[F[_]: Concurrent](
               }
           }
         
-        case (d@Frame.Data(i, data, _, _), s) => 
+        case (d@Frame.Data(i, data, _, _), st) => 
           val size = data.size.toInt
-          if (size > s.remoteSettings.maxFrameSize.frameSize) {
+          if (size > st.remoteSettings.maxFrameSize.frameSize) {
             println("Receive Data Size Larger than Allowed Frame Size - Frame Size Error")
             goAway(H2Error.FrameSizeError)
           } else {
@@ -363,10 +365,10 @@ class H2Connection[F[_]: Concurrent](
                   st <- state.get
                   newSize = st.readWindow - d.data.size.toInt
                   
-                  needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
-                  _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize.toInt))
+                  needsWindowUpdate = (newSize <= (st.remoteSettings.initialWindowSize.windowSize / 2))
+                  _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) st.remoteSettings.initialWindowSize.windowSize else newSize.toInt))
                   _ <- s.receiveData(d)
-                  _ <- if (needsWindowUpdate) outgoing.offer(Frame.WindowUpdate(0, localSettings.initialWindowSize.windowSize - newSize.toInt):: Nil) else Applicative[F].unit
+                  _ <- if (needsWindowUpdate) outgoing.offer(Chunk.singleton(Frame.WindowUpdate(0, st.remoteSettings.initialWindowSize.windowSize - newSize.toInt))) else Applicative[F].unit
                 } yield ()
               case None => 
                 println(s"Received Data Frame for Idle or Closed Stream $i - Protocol Error")

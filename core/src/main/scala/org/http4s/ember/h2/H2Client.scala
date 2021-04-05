@@ -87,7 +87,7 @@ class H2Client[F[_]: Async](
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
       stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
-      queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, List[Frame]]) // TODO revisit
+      queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
       streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
@@ -98,17 +98,15 @@ class H2Client[F[_]: Async](
       bgRead <- h2.readLoop.compile.drain.background
       bgWrite <- h2.writeLoop.compile.drain.background
       _ <- 
-          Stream.eval(closed.take)
-            .repeat
+          Stream.fromQueueUnterminated(closed)
             .evalMap{i =>
               println(s"Removed Stream $i")
               ref.update(m => m - i)
             }.compile.drain.background
-      created <- Stream(
-          Stream.eval(created.take).repeat
-        ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
-          .evalMap{i =>
-              if (i % 2 == 0) {
+      created <-
+          Stream.fromQueueUnterminated(created)
+          .map{i =>
+              val f = if (i % 2 == 0) {
                 val x = for {
                   stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
                   req <- stream.getRequest
@@ -120,15 +118,16 @@ class H2Client[F[_]: Async](
                 } yield out
                 x.attempt.void
               } else Applicative[F].unit
-            
-          }.compile.drain
+            Stream.eval(f)
+          }.parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
+            .compile.drain
             .onError{ case e => Sync[F].delay(println(s"Server Connection Processing Halted $e"))}
             .background
 
       _ <- Resource.make(tlsSocket.write(Chunk.byteVector(Preface.clientBV)))(_ => 
           tlsSocket.write(Chunk.byteVector(Frame.toByteVector(Frame.GoAway(0, 0, H2Error.NoError.value, None))))
       )
-      _ <- Resource.eval(h2.outgoing.offer(Frame.Settings.ConnectionSettings.toSettings(localSettings) :: Nil))
+      _ <- Resource.eval(h2.outgoing.offer(Chunk.singleton(Frame.Settings.ConnectionSettings.toSettings(localSettings))))
       settings <- Resource.eval(h2.settingsAck.get.rethrow)
       _ <- Resource.eval(stateRef.update(s => s.copy(remoteSettings = settings, writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
     } yield h2
