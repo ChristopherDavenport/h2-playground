@@ -83,8 +83,8 @@ class H2Connection[F[_]](
               } >> state.update(s => s.copy(closed = true)).as(g).widen[Frame]
         case otherwise => otherwise.pure[F]
       }
+      .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .chunks
-      // .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .evalMap{chunk => 
         def go(chunk: Chunk[Frame]): F[Unit] = state.get.flatMap{ s =>
           val fullDataSize = chunk.foldLeft(0){
@@ -154,7 +154,7 @@ class H2Connection[F[_]](
     }
     p(ByteVector.empty).stream
   }
-      // .debug(formatter = {c => s"Connection $host:$port Read- $c"})
+      .debug(formatter = {c => s"Connection $host:$port Read- $c"})
       .evalMap(f => state.get.map(s => (f, s)))
       .evalTap{
         // Headers and Continuation Frames are Stateful
@@ -169,8 +169,8 @@ class H2Connection[F[_]](
                   streamCreateAndHeaders.use(_ => 
                     for {
                       stream <- initiateStreamById(id)
-                      _ <- stream.receiveHeaders(h, cs ::: c :: Nil:_*)
                       enqueue <- createdStreams.offer(id)
+                      _ <- stream.receiveHeaders(h, cs ::: c :: Nil:_*)
                     } yield ()
                   )
               }
@@ -188,8 +188,9 @@ class H2Connection[F[_]](
                   streamCreateAndHeaders.use(_ => 
                     for {
                       stream <- initiateStreamById(id)
-                      _ <- stream.receivePushPromise(p, cs ::: c :: Nil:_*)
                       enqueue <- createdStreams.offer(id)
+                      _ <- stream.receivePushPromise(p, cs ::: c :: Nil:_*)
+                      
                     } yield ()
                   )
               }
@@ -242,8 +243,9 @@ class H2Connection[F[_]](
                   streamCreateAndHeaders.use(_ => 
                     for {
                       stream <- initiateStreamById(i)
-                      _ <- stream.receiveHeaders(h)
                       enqueue <- createdStreams.offer(i)
+                      _ <- stream.receiveHeaders(h)
+                      
                     } yield ()
                   )
                 }
@@ -276,8 +278,8 @@ class H2Connection[F[_]](
                   streamCreateAndHeaders.use(_ => 
                     for {
                       stream <- initiateStreamById(i)
-                      _ <- stream.receivePushPromise(h)
                       enqueue <- createdStreams.offer(i)
+                      _ <- stream.receivePushPromise(h)
                     } yield ()
                   )
                 }

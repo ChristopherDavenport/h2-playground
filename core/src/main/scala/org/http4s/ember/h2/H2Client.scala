@@ -50,7 +50,7 @@ class H2Client[F[_]: Async](
   // network: Network[F],
   tls: TLSContext[F],
   connections: Ref[F, Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]],
-  onPushPromise: (org.http4s.Request[fs2.Pure], org.http4s.Response[F]) => F[Unit]
+  onPushPromise: (org.http4s.Request[fs2.Pure], F[org.http4s.Response[F]]) => F[Outcome[F, Throwable, Unit]]
 ){
   import org.http4s._
 
@@ -99,28 +99,35 @@ class H2Client[F[_]: Async](
       bgWrite <- h2.writeLoop.compile.drain.background
       _ <- 
           Stream.fromQueueUnterminated(closed)
+            .repeat
             .evalMap{i =>
               println(s"Removed Stream $i")
               ref.update(m => m - i)
             }.compile.drain.background
       created <-
           Stream.fromQueueUnterminated(created)
-          .map{i =>
+          .parEvalMap(10){i => // Why doesn't this see the first stream?
               val f = if (i % 2 == 0) {
                 val x = for {
+                  //
                   stream <- ref.get.map(_.get(i)).map(_.get) // FOLD
                   req <- stream.getRequest
-                  resp <- stream.getResponse.map(
+                  resp = stream.getResponse.map(
                     _.covary[F].withBodyStream(stream.readBody)
                   )
-                  out <- onPushPromise(req, resp).attempt.void
+                  out <- onPushPromise(req, resp).flatMap{
+                    case Outcome.Canceled() => stream.rstStream(H2Error.RefusedStream)
+                    case Outcome.Errored(e) => stream.rstStream(H2Error.RefusedStream)
+                    case Outcome.Succeeded(_) => Applicative[F].unit
+                  }
 
                 } yield out
                 x.attempt.void
               } else Applicative[F].unit
-            Stream.eval(f)
-          }.parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
-            .compile.drain
+              f
+          }
+            .compile
+            .drain
             .onError{ case e => Sync[F].delay(println(s"Server Connection Processing Halted $e"))}
             .background
 
@@ -161,7 +168,7 @@ class H2Client[F[_]: Async](
 
 object H2Client {
   def impl[F[_]: Async](
-    onPushPromise: (org.http4s.Request[fs2.Pure], org.http4s.Response[F]) => F[Unit], 
+    onPushPromise: (org.http4s.Request[fs2.Pure], F[org.http4s.Response[F]]) => F[Outcome[F, Throwable, Unit]], 
     tlsContext: TLSContext[F],
     settings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(
       initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,

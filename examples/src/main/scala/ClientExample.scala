@@ -22,7 +22,10 @@ object ClientTest {
   def test[F[_]: Async: Parallel] = {
     Resource.eval(Network[F].tlsContext.insecure).flatMap{tls => 
     H2Client.impl[F](
-      {(req, resp) => resp.bodyText.compile.string >> Sync[F].delay(println(s"Got Push Promise $req, $resp"))},
+      {(req, resp) => resp.flatMap(r => 
+          Sync[F].delay(Outcome.succeeded(Applicative[F].pure(println(s"Got Push Promise $req, $r - s ${req.attributes.lookup(H2Keys.StreamIdentifier)} ${req.attributes.lookup(H2Keys.PushPromiseInitialStreamIdentifier)}")))))},
+
+      // {(req, resp) =>Applicative[F].pure(Outcome.Canceled())},
       tls,
       Frame.Settings.ConnectionSettings.default
     )}.use{ c => 
@@ -39,13 +42,13 @@ object ClientTest {
         .use(_.body.compile.drain)
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled
-        // p >> 
-        // (p,p, p, p).parTupled >>
+        p 
+        // (p,p, p, p).parTupled
         // Temporal[F].sleep(10.second) >> 
-        // p
-        Stream(Stream.eval(p.attempt).repeat.take(20000)).parJoin(100).timeout(30.seconds).compile.toList.flatMap{m => 
-          Sync[F].delay(println(s"${m.size}"))
-        }
+        // p >> Temporal[F].sleep(10.second) >> p
+        // Stream(Stream.eval(p.attempt).repeat.take(20000)).parJoin(100).timeout(30.seconds).compile.toList.flatMap{m => 
+        //   Sync[F].delay(println(s"${m.size}"))
+        // }
         // List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
     }
   }
