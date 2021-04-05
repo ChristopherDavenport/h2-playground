@@ -24,7 +24,11 @@ object H2Server {
     port: Port, 
     tlsContext: TLSContext[F], 
     httpApp: HttpApp[F], 
-    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(10000))
+    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(
+      maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(1000),
+      initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
+      maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
+    )
   ) = for {
     sg <- Network[F].socketGroup()
     // wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
@@ -44,7 +48,7 @@ object H2Server {
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])

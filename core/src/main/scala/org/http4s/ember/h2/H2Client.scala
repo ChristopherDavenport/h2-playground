@@ -86,7 +86,7 @@ class H2Client[F[_]: Async](
         .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, Frame.Settings.ConnectionSettings.default.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -163,7 +163,10 @@ object H2Client {
   def impl[F[_]: Async](
     onPushPromise: (org.http4s.Request[fs2.Pure], org.http4s.Response[F]) => F[Unit], 
     tlsContext: TLSContext[F],
-    settings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default,
+    settings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(
+      initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
+      maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
+    ),
   ): Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()

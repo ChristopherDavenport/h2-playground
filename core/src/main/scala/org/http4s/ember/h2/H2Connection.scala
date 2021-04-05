@@ -84,18 +84,18 @@ class H2Connection[F[_]](
         case otherwise => otherwise.pure[F]
       }
       .chunks
-      .debug(formatter = {c => s"Connection $host:$port Write- $c"})
+      // .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .evalMap{chunk => 
         def go(chunk: Chunk[Frame]): F[Unit] = state.get.flatMap{ s =>
           val fullDataSize = chunk.foldLeft(0){
             case (init, Frame.Data(_, data, _, _)) => init + data.size.toInt
             case (init, _) => init
           }
-          // Applicative[F].unit.map(_ => println(s"Next Write Block Window - data: $fullDataSize window:${s.writeWindow}")) >>
+          // println(s"Next Write Block Window - data: $fullDataSize window:${s.writeWindow} $s")
 
           if (fullDataSize <= s.writeWindow) {
             val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
-            state.update(s => s.copy(writeWindow = {s.writeWindow - bv.size.toInt})) >>
+            state.update(s => s.copy(writeWindow = {s.writeWindow - fullDataSize})) >>
             socket.isOpen.ifM(
               socket.write(Chunk.byteVector(bv)),
               new Throwable("Socket Closed when attempting to write").raiseError
@@ -154,7 +154,7 @@ class H2Connection[F[_]](
     }
     p(ByteVector.empty).stream
   }
-      .debug(formatter = {c => s"Connection $host:$port Read- $c"})
+      // .debug(formatter = {c => s"Connection $host:$port Read- $c"})
       .evalMap(f => state.get.map(s => (f, s)))
       .evalTap{
         // Headers and Continuation Frames are Stateful
@@ -355,7 +355,7 @@ class H2Connection[F[_]](
         
         case (d@Frame.Data(i, data, _, _), st) => 
           val size = data.size.toInt
-          if (size > st.remoteSettings.maxFrameSize.frameSize) {
+          if (size > localSettings.maxFrameSize.frameSize) {
             println("Receive Data Size Larger than Allowed Frame Size - Frame Size Error")
             goAway(H2Error.FrameSizeError)
           } else {
@@ -365,10 +365,10 @@ class H2Connection[F[_]](
                   st <- state.get
                   newSize = st.readWindow - d.data.size.toInt
                   
-                  needsWindowUpdate = (newSize <= (st.remoteSettings.initialWindowSize.windowSize / 2))
-                  _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) st.remoteSettings.initialWindowSize.windowSize else newSize.toInt))
-                  _ <- s.receiveData(d)
+                  needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
+                  _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize.toInt))
                   _ <- if (needsWindowUpdate) outgoing.offer(Chunk.singleton(Frame.WindowUpdate(0, st.remoteSettings.initialWindowSize.windowSize - newSize.toInt))) else Applicative[F].unit
+                  _ <- s.receiveData(d)
                 } yield ()
               case None => 
                 println(s"Received Data Frame for Idle or Closed Stream $i - Protocol Error")

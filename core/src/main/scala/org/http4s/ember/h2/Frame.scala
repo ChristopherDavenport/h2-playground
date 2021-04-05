@@ -530,6 +530,10 @@ object Frame {
     case class SettingsMaxConcurrentStreams(maxConcurrency: Integer) extends Setting(0x3, maxConcurrency)
     // The initial value is 2^16-1 (65,535) octets.
     case class SettingsInitialWindowSize(windowSize: Integer) extends Setting(0x4, windowSize)
+    object SettingsInitialWindowSize {
+      val MAX = SettingsInitialWindowSize((2^31)-1)
+      val MIN = SettingsInitialWindowSize((2^16)-1)
+    }
     // The initial value is 2^14 (16,384) octets
     // 2^14 (16,384) and 2^24-1
   //  (16,777,215) octets, inclusive.

@@ -24,9 +24,7 @@ object ClientTest {
     H2Client.impl[F](
       {(req, resp) => resp.bodyText.compile.string >> Sync[F].delay(println(s"Got Push Promise $req, $resp"))},
       tls,
-      Frame.Settings.ConnectionSettings.default.copy(
-        maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
-      )
+      Frame.Settings.ConnectionSettings.default
     )}.use{ c => 
       val p = c.run(org.http4s.Request[F](
         org.http4s.Method.GET, 
@@ -44,10 +42,10 @@ object ClientTest {
         // p >> 
         // (p,p, p, p).parTupled >>
         // Temporal[F].sleep(10.second) >> 
-        p
-        // Stream(Stream.eval(p.attempt).repeat.take(5000)).parJoin(100).timeout(30.seconds).compile.toList.flatMap{m => 
-          // Sync[F].delay(println(s"${m.size}"))
-        // }
+        // p
+        Stream(Stream.eval(p.attempt).repeat.take(20000)).parJoin(100).timeout(30.seconds).compile.toList.flatMap{m => 
+          Sync[F].delay(println(s"${m.size}"))
+        }
         // List.fill(50)(p.attempt).parSequence.flatTap(a => Sync[F].delay(println(a)))
     }
   }
