@@ -29,7 +29,7 @@ class H2Connection[F[_]](
   socket: Socket[F],
 )(implicit F: Temporal[F]){
 
-  def initiateStream: F[H2Stream[F]] = for {
+  def initiateLocalStream: F[H2Stream[F]] = for {
     t <- state.modify{s => 
       val highestIsEven = s.highestStream % 2 == 0
       val newHighest = connectionType match {
@@ -39,6 +39,7 @@ class H2Connection[F[_]](
         (s.copy(highestStream = newHighest) , (s.remoteSettings, newHighest))
     }
     (settings, id) = t
+  
     writeBlock <- Deferred[F, Either[Throwable, Unit]]
     request <- Deferred[F, Either[Throwable, org.http4s.Request[fs2.Pure]]]
     response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
@@ -48,11 +49,10 @@ class H2Connection[F[_]](
     )
     stream = new H2Stream(id, localSettings, connectionType,  state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
     _ <- mapRef.update(m => m + (id -> stream))
-    _ <- state.update(s => s.copy(highestStream = id))
   } yield stream
 
-  def initiateStreamById(id: Int): F[H2Stream[F]] = for {
-    t <- state.get.map(s => (s.remoteSettings, s.highestStream))
+  def initiateRemoteStreamById(id: Int): F[H2Stream[F]] = for {
+    t <- state.get.map(s => (s.remoteSettings, s.remoteHighestStream))
     (settings, highestStream) = t
     writeBlock <- Deferred[F, Either[Throwable, Unit]]
     request <- Deferred[F, Either[Throwable, org.http4s.Request[fs2.Pure]]]
@@ -63,11 +63,11 @@ class H2Connection[F[_]](
     )
     stream = new H2Stream(id, localSettings, connectionType, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
     _ <- mapRef.update(m => m + (id -> stream))
-    _ <- state.update(s => s.copy(highestStream = id))
+    _ <- state.update(s => s.copy(highestStream = Math.max(s.highestStream, id), remoteHighestStream = Math.max(s.remoteHighestStream, id)))
   } yield stream
 
   def goAway(error: H2Error): F[Unit] = {
-    state.get.map(_.highestStream).flatMap{i => 
+    state.get.map(_.remoteHighestStream).flatMap{i => 
       val g = error.toGoAway(i)
       outgoing.offer(Chunk.singleton(g))
     }
@@ -159,7 +159,7 @@ class H2Connection[F[_]](
       .evalTap{
         // Headers and Continuation Frames are Stateful
         // Headers if not closed MUST
-        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, Some((h, cs)), None)) => 
+        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, _, Some((h, cs)), None)) => 
           if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = None)) >> 
             mapRef.get.map(_.get(id)).flatMap{
@@ -168,7 +168,7 @@ class H2Connection[F[_]](
                 case None => 
                   streamCreateAndHeaders.use(_ => 
                     for {
-                      stream <- initiateStreamById(id)
+                      stream <- initiateRemoteStreamById(id)
                       enqueue <- createdStreams.offer(id)
                       _ <- stream.receiveHeaders(h, cs ::: c :: Nil:_*)
                     } yield ()
@@ -178,7 +178,7 @@ class H2Connection[F[_]](
             println("Invalid Continuation - Protocol Error")
             goAway(H2Error.ProtocolError)
           }
-        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, None, Some((p, cs)))) => 
+        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _,_,  _, _, _, _, None, Some((p, cs)))) => 
           if (p.promisedStreamId == id) {
             state.update(s => s.copy(headersInProgress = None)) >> 
             mapRef.get.map(_.get(id)).flatMap{
@@ -187,7 +187,7 @@ class H2Connection[F[_]](
                 case None => 
                   streamCreateAndHeaders.use(_ => 
                     for {
-                      stream <- initiateStreamById(id)
+                      stream <- initiateRemoteStreamById(id)
                       enqueue <- createdStreams.offer(id)
                       _ <- stream.receivePushPromise(p, cs ::: c :: Nil:_*)
                       
@@ -198,7 +198,7 @@ class H2Connection[F[_]](
             println("Invalid Continuation - Protocol Error")
             goAway(H2Error.ProtocolError)
           }
-        case (c@Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, None, Some((h, cs)))) =>
+        case (c@Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, _, None, Some((h, cs)))) =>
           if (h.identifier == id) {
             state.update(s => s.copy(pushPromiseInProgress = (h, cs ::: c :: Nil).some))
           } else {
@@ -206,18 +206,18 @@ class H2Connection[F[_]](
             goAway(H2Error.ProtocolError)
           }
         
-        case (c@Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, Some((h, cs)), None)) =>
+        case (c@Frame.Continuation(id, false, _), H2Connection.State(_,_,  _, _, _, _, _, Some((h, cs)), None)) =>
           if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = (h, cs ::: c :: Nil).some))
           } else {
             println("Invalid Continuation - Protocol Error")
             goAway(H2Error.ProtocolError)
           }
-        case (f, H2Connection.State(_, _, _, _, _, _, Some((h, cs)), None)) => 
+        case (f, H2Connection.State(_, _, _, _, _, _, _, Some((h, cs)), None)) => 
           // Only Continuation Frames Are Valid While there is a value
           println(s"Continuation for headers in process, retrieved unexpected frame $f")
           goAway(H2Error.ProtocolError)
-        case (f, H2Connection.State(_, _, _, _, _, _, None, Some(_))) => 
+        case (f, H2Connection.State(_, _, _, _, _, _, _, None, Some(_))) => 
           // Only Continuation Frames Are Valid While there is a value
           println(s"Continuation for push promise in process, retrieved unexpected frame $f")
           goAway(H2Error.ProtocolError)
@@ -236,13 +236,13 @@ class H2Connection[F[_]](
                   case H2Connection.ConnectionType.Server => i % 2 != 0
                   case H2Connection.ConnectionType.Client => i % 2 == 0
                 }
-                if (!isValidToCreate || i <= s.highestStream) {
+                if (!isValidToCreate || i <= s.remoteHighestStream) {
                   println(s"Not Valid Stream to Create $i - $isValidToCreate, ${s.highestStream} - Protocol Error")
                   goAway(H2Error.ProtocolError)
                 } else {
                   streamCreateAndHeaders.use(_ => 
                     for {
-                      stream <- initiateStreamById(i)
+                      stream <- initiateRemoteStreamById(i)
                       enqueue <- createdStreams.offer(i)
                       _ <- stream.receiveHeaders(h)
                       
@@ -271,13 +271,13 @@ class H2Connection[F[_]](
                 s.receivePushPromise(h)
               case None => 
                 val isValidToCreate = i % 2 == 0
-                if (!isValidToCreate || i <= s.highestStream) {
-                  println(s"Not Valid Stream to Create $i - $isValidToCreate, ${s.highestStream} - Protocol Error")
+                if (!isValidToCreate || i <= s.remoteHighestStream) {
+                  println(s"Not Valid Stream to Create $i - $isValidToCreate, ${s.remoteHighestStream} - Protocol Error")
                   goAway(H2Error.ProtocolError)
                 } else {
                   streamCreateAndHeaders.use(_ => 
                     for {
-                      stream <- initiateStreamById(i)
+                      stream <- initiateRemoteStreamById(i)
                       enqueue <- createdStreams.offer(i)
                       _ <- stream.receivePushPromise(h)
                     } yield ()
@@ -309,7 +309,7 @@ class H2Connection[F[_]](
           goAway(H2Error.ProtocolError)
         case (g@Frame.GoAway(0, _,_,bv),s) => mapRef.get.flatMap{ m => 
           m.values.toList.traverse_(connection => connection.receiveGoAway(g))
-        } >> goAway(H2Error.NoError)
+        } >> outgoing.offer(Chunk.singleton(Frame.Ping.ack))
         case (_:Frame.GoAway, _) => 
           goAway(H2Error.ProtocolError)
         case (Frame.Ping(0, false, bv),s) => 
@@ -411,6 +411,7 @@ object H2Connection {
     writeBlock: Deferred[F, Either[Throwable, Unit]],
     readWindow: Int,
     highestStream: Int,
+    remoteHighestStream: Int,
     closed: Boolean,
     headersInProgress: Option[(Frame.Headers, List[Frame.Continuation])],
     pushPromiseInProgress: Option[(Frame.PushPromise, List[Frame.Continuation])]

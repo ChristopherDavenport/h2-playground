@@ -48,7 +48,7 @@ object H2Server {
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -99,13 +99,15 @@ object H2Server {
                 pushEnabled <- stateRef.get.map(_.remoteSettings.enablePush.isEnabled)
                 streams <- (Alternative[Option].guard(pushEnabled) >> pp).fold(Applicative[F].pure(List.empty)){ l => 
                   l.traverse{req => 
-                    h2.initiateStream.flatMap{ stream => 
-                      stream.sendPushPromise(i, PseudoHeaders.requestToHeaders(req)).as((req, stream))
-                    }
+                    streamCreationLock.permit.use(_ =>
+                      h2.initiateLocalStream.flatMap{ stream => 
+                        stream.sendPushPromise(i, PseudoHeaders.requestToHeaders(req)).as((req, stream))
+                      }
+                    )
                   }
                 }
                 // _ <- Console.make[F].println("Writing Streams Commpleted")
-                responses <- streams.traverse{ case (req, stream) => 
+                responses <- streams.parTraverse{ case (req, stream) => 
                   for {
                     resp <- httpApp(req.covary[F])
                     // _ <- Console.make[F].println("Push Promise Response Completed")

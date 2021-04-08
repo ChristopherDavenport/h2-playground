@@ -86,7 +86,7 @@ class H2Client[F[_]: Async](
         .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, false, None, None)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -154,7 +154,7 @@ class H2Client[F[_]: Async](
     for {
       connection <- Resource.eval(getOrCreate(host, port))
       // Stream Order Must Be Correct. So 
-      stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateStream.flatMap(stream =>
+      stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateLocalStream.flatMap(stream =>
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
       )))(stream => connection.mapRef.update(m => m - stream.id))
       _ <- (
