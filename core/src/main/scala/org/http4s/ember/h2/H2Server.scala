@@ -19,7 +19,7 @@ import cats.effect.std._
 object H2Server {
 
 
-  def impl[F[_]: Async](
+  def impl[F[_]: Async: Parallel](
     host: Host, 
     port: Port, 
     tlsContext: TLSContext[F], 
@@ -112,14 +112,12 @@ object H2Server {
                     _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false) // PP Response
                   } yield (resp.body, stream)
                 }
-                // _ <- Console.make[F].println("Writing PP Response Headers Commpleted")
-                _ <- resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain // Initial Resp Body
-                // _ <- Console.make[F].println("Writing Response Body Commpleted")
-                _ <- responses.traverse{ case (body, stream) => 
+
+                _ <- responses.parTraverse{ case (body, stream) => 
                   resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain >> // PP Resp Body
                     stream.sendData(ByteVector.empty, true)
                 }
-                // _ <- Console.make[F].println("Writing Push Promises Body Commpleted")
+                _ <- resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain // Initial Resp Body
                 _ <- stream.sendData(ByteVector.empty, true)
               } yield ()
               Stream.eval(x.attempt)

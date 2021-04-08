@@ -106,7 +106,7 @@ class H2Client[F[_]: Async](
             }.compile.drain.background
       created <-
           Stream.fromQueueUnterminated(created)
-          .parEvalMap(10){i => // Why doesn't this see the first stream?
+          .parEvalMap(10){i =>
               val f = if (i % 2 == 0) {
                 val x = for {
                   //

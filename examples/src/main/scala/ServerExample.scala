@@ -42,7 +42,7 @@ object ServerTest {
     }.orNotFound
   }
 
-  def test[F[_]: Async] = for {
+  def test[F[_]: Async: Parallel] = for {
     // sg <- Network[F].socketGroup()
     wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
     currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
@@ -56,7 +56,7 @@ object ServerTest {
       Port.fromInt(8080).get,
       tlsContext, 
       simpleApp[F]
-      )
+    )
   } yield ()
   
 }
