@@ -1,6 +1,7 @@
 package org.http4s.ember.h2
 
 import org.http4s._
+import cats._
 import cats.syntax.all._
 import org.typelevel.ci._
 import cats.data._
@@ -36,9 +37,9 @@ object PseudoHeaders {
   def headersToRequestNoBody(hI: NonEmptyList[(String, String)]): Option[Request[fs2.Pure]] = {
     // TODO duplicate check - only these psuedo headers, and no duplicates
     val headers: List[(String, String)] = hI.toList
-    val method = headers.find(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
-    val scheme = headers.find(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
-    val path = headers.find(_._1 === PATH).map(_._2)
+    val method = findWithNoDuplicates(headers)(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
+    val scheme = findWithNoDuplicates(headers)(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
+    val path = findWithNoDuplicates(headers)(_._1 === PATH).map(_._2)
     val authority = extractAuthority(headers)
     val h = Headers(
       headers.filterNot(t => requestPsedo.contains(t._1))
@@ -47,8 +48,10 @@ object PseudoHeaders {
     for {
       m <- method
       p <- path
+      _ <- Alternative[Option].guard(p.nonEmpty) // Not Allowed to be empty in http/2
       u <- Uri.fromString(p).toOption
-    } yield Request(m, u.copy(scheme = scheme, authority = authority), HttpVersion.`HTTP/2.0`, h)
+      s <- scheme // Required
+    } yield Request(m, u.copy(scheme = s.some, authority = authority), HttpVersion.`HTTP/2.0`, h)
   }
 
   def extractAuthority(headers: List[(String, String)]): Option[Uri.Authority] = {
@@ -75,17 +78,33 @@ object PseudoHeaders {
 
   def headersToResponseNoBody(headers: NonEmptyList[(String, String)]): Option[Response[fs2.Pure]] = {
     // TODO Duplicate Check
-    val status = headers.collectFirstSome{
+    val statusL = headers.collect{
       case (PseudoHeaders.STATUS, value) => 
         Status.fromInt(value.toInt).toOption
       case (_, _) => None
     }
-    val h = Headers(
-      headers.filterNot(t => t._1 == PseudoHeaders.STATUS)
-      .map(t => Header.Raw(org.typelevel.ci.CIString(t._1), t._2)):_*
-    )
-    status.map(s => 
-      Response(status = s, httpVersion = HttpVersion.`HTTP/2.0`, headers = h)
-    )
+    if (statusL.size === 1) {
+      val h = Headers(
+        headers.filterNot(t => t._1 == PseudoHeaders.STATUS)
+        .map(t => Header.Raw(org.typelevel.ci.CIString(t._1), t._2)):_*
+      )
+      val status = statusL.head // These lets us fail if duplicate is seen
+      status.map(s => 
+        Response(status = s, httpVersion = HttpVersion.`HTTP/2.0`, headers = h)
+      )
+    } else None
+  }
+
+  def findWithNoDuplicates[A](l: List[A])(bool: A => Boolean): Option[A] = {
+    l.foldLeft(Either.right[Unit, Option[A]](None)){
+      case (Left(e), a) => Left(e)
+      case (Right(Some(a)), next) => 
+        if (bool(next)) Left(())
+        else Right(Some(a))
+      case (Right(None), next) => 
+        if (bool(next)) Right(Some(next))
+        else Right(None)
+    }.toOption.flatten
+
   }
 }

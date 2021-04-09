@@ -36,14 +36,14 @@ object ClientTest {
         // uri = uri"https://twitter.com/"
         // uri = uri"https://banno.com/"
         // uri = uri"http://http2.golang.org/reqinfo"
-        uri = uri"https://localhost:8080/"
-        // uri = uri"https://www.nikkei.com/" // PUSH PROMISES
+        // uri = uri"https://localhost:8080/"
+        uri = uri"https://www.nikkei.com/" // PUSH PROMISES
       ))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
         .use(_.body.compile.drain)
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled
-        // p 
-        (p,p,p, p).parTupled
+        p 
+        // (p,p,p, p).parTupled
         // Temporal[F].sleep(10.second) >> 
         // p >> Temporal[F].sleep(10.second) >> p
         // Stream(Stream.eval(p.attempt).repeat.take(20000)).parJoin(100).timeout(30.seconds).compile.toList.flatMap{m => 

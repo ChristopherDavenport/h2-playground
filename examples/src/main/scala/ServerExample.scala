@@ -26,7 +26,7 @@ object ServerTest {
   import org.http4s.dsl._
   import java.nio.file.{Paths, Path}
   import com.comcast.ip4s._
-  val resp = Response[fs2.Pure](Status.Ok)
+  val resp = Response[fs2.Pure](Status.Ok).withEntity("Hello World!")
   def simpleApp[F[_]: Monad] = {
     val dsl = new Http4sDsl[F]{}; import dsl._
     HttpRoutes.of[F]{ 
@@ -34,8 +34,8 @@ object ServerTest {
         Response[F](Status.Ok).withEntity("Foo Endpoint").pure[F]
 
       case _  => 
-          resp.covary[F]
-          .withAttribute(H2Keys.PushPromises, Request[Pure](Method.GET, uri"/foo") :: Nil)
+          resp.covary[F] // URI needs authority scheme, etc
+          .withAttribute(H2Keys.PushPromises, Request[Pure](Method.GET, uri"https://localhost:8080/foo") :: Nil)
           .pure[F]
         
 

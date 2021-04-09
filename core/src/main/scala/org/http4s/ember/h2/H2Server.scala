@@ -95,6 +95,7 @@ object H2Server {
                 req <- stream.getRequest.map(_.covary[F].withBodyStream(stream.readBody))
                 resp <- httpApp(req)
                 _ <- stream.sendHeaders(PseudoHeaders.responseToHeaders(resp), false)
+                // Push Promises
                 pp = resp.attributes.lookup(H2Keys.PushPromises)
                 pushEnabled <- stateRef.get.map(_.remoteSettings.enablePush.isEnabled)
                 streams <- (Alternative[Option].guard(pushEnabled) >> pp).fold(Applicative[F].pure(List.empty)){ l => 
@@ -106,7 +107,7 @@ object H2Server {
                     )
                   }
                 }
-                // _ <- Console.make[F].println("Writing Streams Commpleted")
+                _ <- Console.make[F].println("Writing Streams Commpleted")
                 responses <- streams.parTraverse{ case (req, stream) => 
                   for {
                     resp <- httpApp(req.covary[F])
@@ -119,6 +120,7 @@ object H2Server {
                   resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain >> // PP Resp Body
                     stream.sendData(ByteVector.empty, true)
                 }
+
                 _ <- resp.body.chunks.evalMap(c => stream.sendData(c.toByteVector, false)).compile.drain // Initial Resp Body
                 _ <- stream.sendData(ByteVector.empty, true)
               } yield ()
