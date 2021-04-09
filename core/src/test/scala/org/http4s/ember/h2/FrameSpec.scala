@@ -45,7 +45,7 @@ class FrameSpec extends CatsEffectSuite {
     )
     val bv = Frame.RawFrame.toByteVector(init)
     val intermediate = Frame.RawFrame.fromByteVector(bv).map(_._1)
-    val parsed = intermediate.flatMap(Frame.Data.fromRaw)
+    val parsed = intermediate.flatMap(Frame.Data.fromRaw(_).toOption)
     val expected = Frame.Data(Int.MaxValue, ByteVector(0x00, 0x02), None, true)
     
 
@@ -55,14 +55,14 @@ class FrameSpec extends CatsEffectSuite {
   test("Data Frame should traverse"){
     val init = Frame.Data(4, ByteVector(0x02, 0xa0), None, false)
     val encoded = Frame.Data.toRaw(init)
-    val back = Frame.Data.fromRaw(encoded)
+    val back = Frame.Data.fromRaw(encoded).toOption
     assertEquals(back, init.some)
   }
 
   test("Data Frame should traverse with padding"){
     val init = Frame.Data(4, ByteVector(0x02, 0xa0), Some(ByteVector(0xff, 0xff, 0xff, 0xff)), false)
     val encoded = Frame.Data.toRaw(init)
-    val back = Frame.Data.fromRaw(encoded)
+    val back = Frame.Data.fromRaw(encoded).toOption
     assertEquals(back, init.some)
   }
 
@@ -75,7 +75,7 @@ class FrameSpec extends CatsEffectSuite {
       Some(ByteVector(1))
     )
     val encoded = Frame.Headers.toRaw(init)
-    val back = Frame.Headers.fromRaw(encoded)
+    val back = Frame.Headers.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -85,7 +85,7 @@ class FrameSpec extends CatsEffectSuite {
   test("Priority should traverse"){
     val init = Frame.Priority(5, true, 7, 0x01)
     val encoded = Frame.Priority.toRaw(init)
-    val back = Frame.Priority.fromRaw(encoded)
+    val back = Frame.Priority.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -95,7 +95,7 @@ class FrameSpec extends CatsEffectSuite {
   test("RstStream should traverse"){
     val init = Frame.RstStream(4, 73)
     val encoded = Frame.RstStream.toRaw(init)
-    val back = Frame.RstStream.fromRaw(encoded)
+    val back = Frame.RstStream.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -117,7 +117,7 @@ class FrameSpec extends CatsEffectSuite {
       )
     )
     val encoded = Frame.Settings.toRaw(init)
-    val back = Frame.Settings.fromRaw(encoded)
+    val back = Frame.Settings.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -127,7 +127,7 @@ class FrameSpec extends CatsEffectSuite {
   test("PushPromise should traverse"){
     val init = Frame.PushPromise(74, true, 107, ByteVector(0x1, 0xe, 0xb), Some(ByteVector(0x0, 0x0, 0x0)))
     val encoded = Frame.PushPromise.toRaw(init)
-    val back = Frame.PushPromise.fromRaw(encoded)
+    val back = Frame.PushPromise.fromRaw(encoded).toOption
     assertEquals(
       back, 
       init.some
@@ -137,7 +137,7 @@ class FrameSpec extends CatsEffectSuite {
   test("Ping should traverse"){
     val init = Frame.Ping.ack
     val encoded = Frame.Ping.toRaw(init)
-    val back = Frame.Ping.fromRaw(encoded)
+    val back = Frame.Ping.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -147,7 +147,7 @@ class FrameSpec extends CatsEffectSuite {
   test("GoAway should traverse"){
     val init = Frame.GoAway(0, 476, Int.MaxValue, Some(ByteVector(0xa)))
     val encoded = Frame.GoAway.toRaw(init)
-    val back = Frame.GoAway.fromRaw(encoded)
+    val back = Frame.GoAway.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -157,7 +157,7 @@ class FrameSpec extends CatsEffectSuite {
   test("WindowUpdate should traverse"){
     val init = Frame.WindowUpdate(73, 10210)
     val encoded = Frame.WindowUpdate.toRaw(init)
-    val back = Frame.WindowUpdate.fromRaw(encoded)
+    val back = Frame.WindowUpdate.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some
@@ -167,7 +167,7 @@ class FrameSpec extends CatsEffectSuite {
   test("Continuation should traverse"){
     val init = Frame.Continuation(73, true, ByteVector(0xe, 0x8, 0x3))
     val encoded = Frame.Continuation.toRaw(init)
-    val back = Frame.Continuation.fromRaw(encoded)
+    val back = Frame.Continuation.fromRaw(encoded).toOption
     assertEquals(
       back,
       init.some

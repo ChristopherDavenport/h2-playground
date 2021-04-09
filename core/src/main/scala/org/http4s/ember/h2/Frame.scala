@@ -477,20 +477,28 @@ object Frame {
 
     // Effect?
     def fromRaw(raw: RawFrame): Either[H2Error, Settings] = {
-      if (raw.`type` == `type` && raw.payload.size % 6 == 0) {
+      println(raw)
+      if (raw.`type` == `type`) {
         val ack = (raw.flags & (0x01 << 0)) != 0
-        val settings = for {
-          i <- 0 to (raw.payload.size.toInt - 5) by 6
-        } yield {
-          val s =  (raw.payload(i) << 8) + (raw.payload(i + 1) << 0)
-          val v0 = ((raw.payload(i + 2) & 0xff) << 24)
-          val v1 = ((raw.payload(i + 3) & 0xff) << 16)
-          val v2 = ((raw.payload(i + 4) & 0xff) << 8)
-          val v3 = ((raw.payload(i + 5) & 0xff) << 0)
-          val value = v0 | v1 | v2 | v3
-          Setting(s.toShort, value)
+        if (ack && raw.payload.nonEmpty) H2Error.FrameSizeError.asLeft
+        else if (ack) Settings(raw.identifier, ack, List.empty).asRight
+        else if (raw.payload.size % 6 != 0) H2Error.FrameSizeError.asLeft
+        else {
+          val settings = for {
+            i <- 0 to (raw.payload.size.toInt - 5) by 6
+          } yield {
+            val s =  (raw.payload(i) << 8) + (raw.payload(i + 1) << 0)
+            val v0 = ((raw.payload(i + 2) & 0xff) << 24)
+            val v1 = ((raw.payload(i + 3) & 0xff) << 16)
+            val v2 = ((raw.payload(i + 4) & 0xff) << 8)
+            val v3 = ((raw.payload(i + 5) & 0xff) << 0)
+            val value = v0 | v1 | v2 | v3
+            Setting(s.toShort, value)
+          }
+          settings.toList.sequence.map(s => 
+            Settings(raw.identifier, ack, s.toList)
+          )
         }
-        Settings(raw.identifier, ack, settings.toList).asRight
       } else Either.left(H2Error.InternalError)
     }
 
@@ -511,18 +519,18 @@ object Frame {
 
     sealed abstract class Setting(val identifier: Short, val value: Integer)
     object Setting {
-      def apply(identifier: Short, value: Integer): Setting = identifier match {
-        case 0x1 => SettingsHeaderTableSize(value)
+      def apply(identifier: Short, value: Integer): Either[H2Error, Setting] = identifier match {
+        case 0x1 => SettingsHeaderTableSize(value).asRight
         case 0x2 => value match {
-          case 1 => SettingsEnablePush(true)
-          case 0 => SettingsEnablePush(false)
-          case other => Unknown(identifier, value)
+          case 1 => SettingsEnablePush(true).asRight
+          case 0 => SettingsEnablePush(false).asRight
+          case other => H2Error.ProtocolError.asLeft
         }
-        case 0x3 => SettingsMaxConcurrentStreams(value)
-        case 0x4 => SettingsInitialWindowSize(value)
-        case 0x5 => SettingsMaxFrameSize(value)
-        case 0x6 => SettingsMaxHeaderListSize(value)
-        case other => Unknown(identifier, value)
+        case 0x3 => SettingsMaxConcurrentStreams(value).asRight
+        case 0x4 => SettingsInitialWindowSize.fromInt(value)
+        case 0x5 => SettingsMaxFrameSize.fromInt(value)
+        case 0x6 => SettingsMaxHeaderListSize(value).asRight
+        case other => Unknown(identifier, value).asRight
       }
     }
     //The initial value is 4,096 octets
@@ -534,8 +542,15 @@ object Frame {
     // The initial value is 2^16-1 (65,535) octets.
     case class SettingsInitialWindowSize(windowSize: Integer) extends Setting(0x4, windowSize)
     object SettingsInitialWindowSize {
-      val MAX = SettingsInitialWindowSize((2^31)-1)
-      val MIN = SettingsInitialWindowSize((2^16)-1)
+      val MAX = SettingsInitialWindowSize(Int.MaxValue-1)
+      val MIN = SettingsInitialWindowSize(65536-1)
+      def fromInt(windowSize: Int) : Either[H2Error, SettingsInitialWindowSize] = {
+        if (windowSize <= MAX.windowSize && windowSize >= MIN.windowSize) SettingsInitialWindowSize(windowSize).asRight
+        else {
+          println(s"Found $windowSize, $MAX $MIN")
+          H2Error.FlowControlError.asLeft
+        }
+      }
     }
     // The initial value is 2^14 (16,384) octets
     // 2^14 (16,384) and 2^24-1
@@ -544,9 +559,9 @@ object Frame {
     object SettingsMaxFrameSize {
       val MAX = SettingsMaxFrameSize(16777215)
       val MIN = SettingsMaxFrameSize(16384)
-      def fromInt(frameSize: Int) : Option[SettingsMaxFrameSize] = {
-        if (frameSize <= MAX.frameSize && frameSize >= MIN.frameSize) SettingsMaxFrameSize(frameSize).some
-        else None
+      def fromInt(frameSize: Int) : Either[H2Error, SettingsMaxFrameSize] = {
+        if (frameSize <= MAX.frameSize && frameSize >= MIN.frameSize) SettingsMaxFrameSize(frameSize).asRight
+        else H2Error.ProtocolError.asLeft
       }
     }
     // The value is based on the
@@ -638,7 +653,7 @@ object Frame {
     |                                                               |
     +---------------------------------------------------------------+
   */
-  case class Ping(identifier: Int, ack: Boolean, data: Option[ByteVector]) extends Frame{
+  case class Ping(identifier: Int, ack: Boolean, data: ByteVector) extends Frame{
     override def toString: String = 
       if (identifier == 0 && ack) "Ping.Ack"
       else if (identifier == 0 && !ack) "Ping"
@@ -646,16 +661,17 @@ object Frame {
   }// Always exactly 8 bytes
   object Ping {
     val `type`: Byte = 0x6
+    val empty = ByteVector(0, 0, 0, 0, 0, 0, 0, 0)
 
 
-    val default = Ping(0, false, None)
-    val ack = Ping(0, true, None)
+    val default = Ping(0, false, empty)
+    val ack = Ping(0, true, empty)
 
     val emptyBV = ByteVector(0, 0, 0, 0, 0, 0, 0, 0)
 
     def toRaw(ping: Ping): RawFrame = {
       val flag: Byte = if (ping.ack) 0 | (1 << 0) else 0
-      val payload = ping.data.fold(emptyBV)(bv => if (bv.length === 8) bv else emptyBV)
+      val payload = ping.data
 
       RawFrame(8, `type`, flag, ping.identifier, payload)
     }
@@ -663,8 +679,8 @@ object Frame {
     def fromRaw(raw: RawFrame): Either[H2Error, Ping] = {
       if (raw.`type` == `type`){
         val ack = (raw.flags & (0x01 << 0)) != 0
-        val payload = if (raw.payload == emptyBV) None else Some(raw.payload)
-        if (payload.forall(bv => bv.size == 8)) Either.right(Ping(raw.identifier, ack, payload))
+        // val payload = if (raw.payload == emptyBV) None else Some(raw.payload)
+        if (raw.payload.size == 8 && raw.length == 8) Either.right(Ping(raw.identifier, ack, raw.payload))
         else H2Error.ProtocolError.asLeft
       } else H2Error.InternalError.asLeft
     }
@@ -754,7 +770,7 @@ object Frame {
     }
 
     def fromRaw(raw: RawFrame): Either[H2Error, WindowUpdate] = {
-      if (raw.`type` == `type` && raw.payload.size == 4){
+      if (raw.`type` == `type` && raw.payload.size == 4 && raw.length == 4){
         val s0 = (raw.payload(0) & 0xff) 
         val s1 = (raw.payload(1) & 0xff) << 16
         val s2 = (raw.payload(2) & 0xff) << 8
@@ -763,7 +779,7 @@ object Frame {
         val s = modS0 | s1 | s2 | s3
 
         WindowUpdate(raw.identifier, s).asRight
-      } else H2Error.InternalError.asLeft
+      } else H2Error.ProtocolError.asLeft
     }
   }
 

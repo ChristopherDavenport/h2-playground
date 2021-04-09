@@ -139,10 +139,15 @@ class H2Connection[F[_]](
           case Some((raw, leftover)) => 
             Frame.fromRaw(raw) match {
               case Some(Right(frame)) => 
-                Pull.output1(frame) >> p(leftover)
+                Pull.output1(frame) >>
+                p(leftover)
               case Some(Left(e)) => 
-                Pull.eval(goAway(e)) >> Pull.done
+                s"Connection $host:$port readLoop Terminated invalid Raw to Frame"
+                Pull.eval(goAway(e)) >> 
+                Pull.done
               case None => 
+                // println(s"Connection $host:$port readLoop Terminated invalid Raw to Frame, invalid frame type $raw")
+                // Pull.eval(goAway(H2Error.ProtocolError)) >> Pull.done
                 p(leftover) // Ignore Unrecognized frames
             }
           case None => 
@@ -319,11 +324,7 @@ class H2Connection[F[_]](
         case (_:Frame.GoAway, _) => 
           goAway(H2Error.ProtocolError)
         case (Frame.Ping(0, false, bv),s) => 
-          if (bv.fold(true)(_.size.toInt == 8)) {
             outgoing.offer(Chunk.singleton(Frame.Ping.ack.copy(data = bv)))
-          } else {
-            goAway(H2Error.FrameSizeError)
-          }
         case (Frame.Ping(0, true, _),s) => Applicative[F].unit
         case (Frame.Ping(x, _, _),s) => 
           println("Encounteed NonZero Ping - Protocol Error")

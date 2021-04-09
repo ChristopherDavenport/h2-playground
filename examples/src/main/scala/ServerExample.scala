@@ -55,7 +55,8 @@ object ServerTest {
       Ipv4Address.fromString("0.0.0.0").get,
       Port.fromInt(8080).get,
       tlsContext, 
-      simpleApp[F]
+      simpleApp[F],
+      Frame.Settings.ConnectionSettings.default
     )
   } yield ()
   
