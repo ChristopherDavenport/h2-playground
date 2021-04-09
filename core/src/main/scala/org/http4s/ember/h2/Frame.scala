@@ -94,18 +94,18 @@ object Frame {
     }
   }
 
-  def fromRaw(rawFrame: RawFrame): Option[Frame] = {
+  def fromRaw(rawFrame: RawFrame): Option[Either[H2Error, Frame]] = {
     rawFrame.`type` match {
-      case Data.`type` => Data.fromRaw(rawFrame)
-      case Headers.`type` => Headers.fromRaw(rawFrame)
-      case Priority.`type` => Priority.fromRaw(rawFrame)
-      case RstStream.`type` => RstStream.fromRaw(rawFrame)
-      case Settings.`type` => Settings.fromRaw(rawFrame)
-      case PushPromise.`type` => PushPromise.fromRaw(rawFrame)
-      case Ping.`type` => Ping.fromRaw(rawFrame)
-      case GoAway.`type` => GoAway.fromRaw(rawFrame)
-      case WindowUpdate.`type` => WindowUpdate.fromRaw(rawFrame)
-      case Continuation.`type` => Continuation.fromRaw(rawFrame)
+      case Data.`type` => Data.fromRaw(rawFrame).some
+      case Headers.`type` => Headers.fromRaw(rawFrame).some
+      case Priority.`type` => Priority.fromRaw(rawFrame).some
+      case RstStream.`type` => RstStream.fromRaw(rawFrame).some
+      case Settings.`type` => Settings.fromRaw(rawFrame).some
+      case PushPromise.`type` => PushPromise.fromRaw(rawFrame).some
+      case Ping.`type` => Ping.fromRaw(rawFrame).some
+      case GoAway.`type` => GoAway.fromRaw(rawFrame).some
+      case WindowUpdate.`type` => WindowUpdate.fromRaw(rawFrame).some
+      case Continuation.`type` => Continuation.fromRaw(rawFrame).some
       case _ => None
     }
   }
@@ -143,7 +143,7 @@ object Frame {
     // 2 flags 
     // EndStream = Bit 0 indicates this is the last frame this will send
     // Padded = Bit 3 indicates
-    def fromRaw(rawFrame: RawFrame): Option[Data] = {
+    def fromRaw(rawFrame: RawFrame): Either[H2Error, Data] = {
       if (rawFrame.`type` === `type`) {
         val endStream = (rawFrame.flags & (0x01 << 0)) != 0
         val padded = (rawFrame.flags & (0x01 << 3)) != 0
@@ -153,10 +153,13 @@ object Frame {
           val dataSize = baseSize - padLength
           val data = rawFrame.payload.drop(1).take(dataSize)
           val pad = rawFrame.payload.drop(1).drop(dataSize)
-
-          Data(rawFrame.identifier, data, Some(pad), endStream).some
-        } else Data(rawFrame.identifier, rawFrame.payload, None, endStream).some
-      } else None
+          if (pad.length == padLength && data.size == dataSize){
+            Data(rawFrame.identifier, data, Some(pad), endStream).asRight
+          } else Either.left(H2Error.ProtocolError)
+        } else {
+          Data(rawFrame.identifier, rawFrame.payload, None, endStream).asRight
+        } 
+      } else Either.left(H2Error.ProtocolError)
     }
 
     def toRaw(data: Data): RawFrame = {
@@ -212,7 +215,7 @@ object Frame {
 
     case class StreamDependency(exclusive: Boolean, dependency: Int, weight: Byte)
 
-    def fromRaw(rawFrame: RawFrame): Option[Headers] = 
+    def fromRaw(rawFrame: RawFrame): Either[H2Error, Headers] = 
       rawFrame.`type` match {
         case `type` => 
           val endStream = (rawFrame.flags & (0x01 << 0)) != 0
@@ -222,7 +225,7 @@ object Frame {
 
           (priority, padded) match {
             case (false, false) => 
-              Headers(rawFrame.identifier, None, endStream, endHeaders, rawFrame.payload, None).some
+              Headers(rawFrame.identifier, None, endStream, endHeaders, rawFrame.payload, None).asRight
             case (true, true) => 
               // This hurts. And is SO inefficient
               val bv = rawFrame.payload
@@ -245,7 +248,7 @@ object Frame {
                 endHeaders,
                 payload,
                 Some(pad)
-              ).some
+              ).asRight
             case (true, false) => 
               val rest = rawFrame.payload
               val s0 = rest.get(0)
@@ -265,7 +268,7 @@ object Frame {
                 endHeaders,
                 payload,
                 None
-              ).some
+              ).asRight
 
             case (false, true) =>
               val bv = rawFrame.payload
@@ -279,9 +282,9 @@ object Frame {
                 endHeaders,
                 payload,
                 Some(pad)
-              ).some
+              ).asRight
           }
-        case _ => None
+        case _ => Either.left(H2Error.InternalError)
       }
     def toRaw(headers: Headers): RawFrame = {
       val flags = {
@@ -339,7 +342,7 @@ object Frame {
   ) extends Frame
   object Priority {
     val `type`: Byte = 0x2
-    def fromRaw(raw: RawFrame): Option[Priority] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, Priority] = {
       if (raw.`type` == `type` && raw.payload.size == 5){
         val s0 = raw.payload(0)
         val s1 = raw.payload(1)
@@ -350,8 +353,8 @@ object Frame {
         val dependency = ((mod0 << 24) + (s1 << 16) + (s2 << 8) + (s3 << 0))
         val weight = raw.payload(4)
 
-        Priority(raw.identifier, exclusive, dependency, weight).some
-      } else None
+        Priority(raw.identifier, exclusive, dependency, weight).asRight
+      } else Either.left(H2Error.InternalError)
     }
 
     def toRaw(priority: Priority): RawFrame = {
@@ -387,9 +390,9 @@ object Frame {
       RawFrame(4, `type`, 0, rst.identifier, ByteVector.fromInt(rst.value.toInt))
     }
 
-    def fromRaw(raw: RawFrame): Option[RstStream] = {
-      if (raw.`type` == `type`) RstStream(raw.identifier, raw.payload.toInt(false, ByteOrdering.BigEndian)).some
-      else None
+    def fromRaw(raw: RawFrame): Either[H2Error, RstStream] = {
+      if (raw.`type` == `type`) RstStream(raw.identifier, raw.payload.toInt(false, ByteOrdering.BigEndian)).asRight
+      else Either.left(H2Error.InternalError)
     }
   }
 
@@ -473,7 +476,7 @@ object Frame {
     }
 
     // Effect?
-    def fromRaw(raw: RawFrame): Option[Settings] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, Settings] = {
       if (raw.`type` == `type` && raw.payload.size % 6 == 0) {
         val ack = (raw.flags & (0x01 << 0)) != 0
         val settings = for {
@@ -487,8 +490,8 @@ object Frame {
           val value = v0 | v1 | v2 | v3
           Setting(s.toShort, value)
         }
-        Settings(raw.identifier, ack, settings.toList).some
-      } else None
+        Settings(raw.identifier, ack, settings.toList).asRight
+      } else Either.left(H2Error.InternalError)
     }
 
     def toRaw(settings: Settings): RawFrame = {
@@ -594,7 +597,7 @@ object Frame {
       RawFrame(payload.size.toInt, `type`, flag, push.identifier, payload)
     }
 
-    def fromRaw(raw: RawFrame): Option[PushPromise] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, PushPromise] = {
       if (raw.`type` == `type`){
         val endHeaders = (raw.flags & (0x01 << 2)) != 0
         val padded = (raw.flags & (0x01 << 3)) != 0
@@ -609,7 +612,7 @@ object Frame {
           val modS0 = (s0 & ~(1 << 7)) << 24
           val s = modS0 | s1 | s2 | s3
 
-          PushPromise(raw.identifier, endHeaders, s, raw.payload.drop(5).dropRight(padLength), raw.payload.takeRight(padLength).some).some
+          PushPromise(raw.identifier, endHeaders, s, raw.payload.drop(5).dropRight(padLength), raw.payload.takeRight(padLength).some).asRight
         } else {
           val s0 = (raw.payload(0) & 0xff) 
           val s1 = (raw.payload(1) & 0xff) << 16
@@ -618,12 +621,12 @@ object Frame {
           val modS0 = (s0 & ~(1 << 7)) << 24
           val s = modS0 | s1 | s2 | s3
 
-          PushPromise(raw.identifier, endHeaders, s, raw.payload.drop(4), None).some
+          PushPromise(raw.identifier, endHeaders, s, raw.payload.drop(4), None).asRight
 
         }
 
 
-      } else None
+      } else H2Error.InternalError.asLeft
     }
   }
 
@@ -657,13 +660,13 @@ object Frame {
       RawFrame(8, `type`, flag, ping.identifier, payload)
     }
 
-    def fromRaw(raw: RawFrame): Option[Ping] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, Ping] = {
       if (raw.`type` == `type`){
         val ack = (raw.flags & (0x01 << 0)) != 0
         val payload = if (raw.payload == emptyBV) None else Some(raw.payload)
-        
-        Ping(raw.identifier, ack, payload).some
-      } else None
+        if (payload.forall(bv => bv.size == 8)) Either.right(Ping(raw.identifier, ack, payload))
+        else H2Error.ProtocolError.asLeft
+      } else H2Error.InternalError.asLeft
     }
 
   }
@@ -703,7 +706,7 @@ object Frame {
       RawFrame(payload.length.toInt, `type`, 0, goAway.identifier, payload)
     }
 
-    def fromRaw(raw: RawFrame): Option[GoAway] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, GoAway] = {
       if (raw.`type` == `type`){
         val s0 = (raw.payload(0) & 0xff) 
         val s1 = (raw.payload(1) & 0xff) << 16
@@ -722,8 +725,8 @@ object Frame {
           val end = raw.payload.drop(8)
           if (end.isEmpty) None else Some(end)
         }
-        GoAway(raw.identifier, s, e, rest).some
-      } else None
+        GoAway(raw.identifier, s, e, rest).asRight
+      } else H2Error.InternalError.asLeft
     }
 
   }
@@ -750,7 +753,7 @@ object Frame {
       RawFrame(payload.length.toInt, `type`, 0, windowUpdate.identifier, payload)
     }
 
-    def fromRaw(raw: RawFrame): Option[WindowUpdate] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, WindowUpdate] = {
       if (raw.`type` == `type` && raw.payload.size == 4){
         val s0 = (raw.payload(0) & 0xff) 
         val s1 = (raw.payload(1) & 0xff) << 16
@@ -759,8 +762,8 @@ object Frame {
         val modS0 = (s0 & ~(1 << 7)) << 24
         val s = modS0 | s1 | s2 | s3
 
-        WindowUpdate(raw.identifier, s).some
-      } else None
+        WindowUpdate(raw.identifier, s).asRight
+      } else H2Error.InternalError.asLeft
     }
   }
 
@@ -778,11 +781,11 @@ object Frame {
       val flag: Byte = if (cont.endHeaders) 0 | (1 << 2) else 0
       RawFrame(cont.headerBlockFragment.size.toInt, `type`, flag, cont.identifier, cont.headerBlockFragment)
     }
-    def fromRaw(raw: RawFrame): Option[Continuation] = {
+    def fromRaw(raw: RawFrame): Either[H2Error, Continuation] = {
       if (raw.`type` == `type`){
         val endHeaders = (raw.flags & (0x01 << 2)) != 0
-        Continuation(raw.identifier, endHeaders, raw.payload).some
-      } else None
+        Continuation(raw.identifier, endHeaders, raw.payload).asRight
+      } else H2Error.InternalError.asLeft
     }
   }
 

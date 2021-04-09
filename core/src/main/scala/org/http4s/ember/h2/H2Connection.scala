@@ -138,7 +138,10 @@ class H2Connection[F[_]](
         Frame.RawFrame.fromByteVector(acc) match {
           case Some((raw, leftover)) => 
             Frame.fromRaw(raw) match {
-              case Some(frame) => Pull.output1(frame) >> p(leftover)
+              case Some(Right(frame)) => 
+                Pull.output1(frame) >> p(leftover)
+              case Some(Left(e)) => 
+                Pull.eval(goAway(e)) >> Pull.done
               case None => 
                 p(leftover) // Ignore Unrecognized frames
             }
@@ -222,11 +225,13 @@ class H2Connection[F[_]](
           println(s"Continuation for push promise in process, retrieved unexpected frame $f")
           goAway(H2Error.ProtocolError)
 
-        case (h@Frame.Headers(i, _, _, true, headerBlock, _), s) => 
+        case (h@Frame.Headers(i, sd, _, true, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (size > s.remoteSettings.maxFrameSize.frameSize) {
             println("Header Size too large for frame size")
             goAway(H2Error.FrameSizeError)
+          } else if (sd.exists(s => s.dependency == i)) {
+            goAway(H2Error.ProtocolError)
           } else {
             mapRef.get.map{_.get(i)}.flatMap{
               case Some(s) => 
@@ -251,9 +256,10 @@ class H2Connection[F[_]](
                 }
             }
           }
-        case (h@Frame.Headers(i, _, _, false, headerBlock, _), s) => 
+        case (h@Frame.Headers(i, sd, _, false, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (size > s.remoteSettings.maxFrameSize.frameSize) goAway(H2Error.FrameSizeError)
+          else if (sd.exists(s => s.dependency == i)) goAway(H2Error.ProtocolError)
           else {
             state.update(s => s.copy(headersInProgress = Some((h, List.empty))))
           }
@@ -394,11 +400,15 @@ class H2Connection[F[_]](
               goAway(H2Error.ProtocolError)
             case H2Connection.ConnectionType.Client => Applicative[F].unit // TODO Implement Push Promise Flow
           }
-        case (Frame.Priority(_, _, _, _), s) => Applicative[F].unit // We Do Nothing with these presently
-      }.drain.handleErrorWith{
-        case e => 
-          Stream.eval(Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e"))).drain ++ 
-          Stream.eval(goAway(H2Error.InternalError) >> state.update(s => s.copy(closed = true))).drain
+        case (Frame.Priority(i, _, i2, _), s) =>
+          if (i == i2) goAway(H2Error.ProtocolError)  // Can't depend on yourself
+          else Applicative[F].unit // We Do Nothing with these presently
+      }.drain.onFinalizeCase[F]{
+        case Resource.ExitCase.Errored(e) => 
+          Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e")) >> 
+          goAway(H2Error.InternalError) >> 
+          state.update(s => s.copy(closed = true))
+        case _ => Applicative[F].unit
       } 
 
 
