@@ -35,20 +35,37 @@ object PseudoHeaders {
   }
 
   def headersToRequestNoBody(hI: NonEmptyList[(String, String)]): Option[Request[fs2.Pure]] = {
-    // TODO duplicate check - only these psuedo headers, and no duplicates
+    // TODO This can be a 1 pass operation. This is not...
     val headers: List[(String, String)] = hI.toList
-    val method = findWithNoDuplicates(headers)(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
-    val scheme = findWithNoDuplicates(headers)(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
-    val path = findWithNoDuplicates(headers)(_._1 === PATH).map(_._2)
-    val authority = extractAuthority(headers)
+    val pseudos = headers.takeWhile(_._1.startsWith(":"))
+    val method = findWithNoDuplicates(pseudos)(_._1 === METHOD).map(_._2).flatMap(Method.fromString(_).toOption)
+    val scheme = findWithNoDuplicates(pseudos)(_._1 === SCHEME).map(_._2).map(Uri.Scheme(_))
+    val path = findWithNoDuplicates(pseudos)(_._1 === PATH).map(_._2)
+    val authority = extractAuthority(pseudos)
+
+    val noOtherPseudo = pseudos
+      .filterNot(t => requestPsedo.contains(t._1))
+      .isEmpty
+
+    val teIsCorrect = headers.find(_._1 === "te").headOption.fold(true)(_._2 === "trailers")
+    val connectionIsAbsent = headers.find(_._1 === "connection").isEmpty
+
+    val reqHeaders = headers.dropWhile(_._1.startsWith(":"))
+
+    val noOtherPseudos = !reqHeaders.exists(_._1.startsWith(":"))
+    val noUppercaseHeaders = reqHeaders.map(_._1).forall(s => s === s.toLowerCase)
+
+
     val h = Headers(
-      headers.filterNot(t => requestPsedo.contains(t._1))
+      reqHeaders
       .map(t => Header.Raw(org.typelevel.ci.CIString(t._1), t._2)):_*
     )
     for {
+      _ <- Alternative[Option].guard(noOtherPseudo && teIsCorrect && connectionIsAbsent && noOtherPseudos && noUppercaseHeaders)
       m <- method
       p <- path
       _ <- Alternative[Option].guard(p.nonEmpty) // Not Allowed to be empty in http/2
+      
       u <- Uri.fromString(p).toOption
       s <- scheme // Required
     } yield Request(m, u.copy(scheme = s.some, authority = authority), HttpVersion.`HTTP/2.0`, h)
