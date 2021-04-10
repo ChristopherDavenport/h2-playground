@@ -47,7 +47,7 @@ class H2Connection[F[_]](
     response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body)
+      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body, None)
     )
     stream = new H2Stream(id, localSettings, connectionType,  state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
     _ <- mapRef.update(m => m + (id -> stream))
@@ -61,7 +61,7 @@ class H2Connection[F[_]](
     response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body)
+      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body, None)
     )
     stream = new H2Stream(id, localSettings, connectionType, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
     _ <- mapRef.update(m => m + (id -> stream))

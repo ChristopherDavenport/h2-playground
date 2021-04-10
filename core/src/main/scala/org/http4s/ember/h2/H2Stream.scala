@@ -135,7 +135,9 @@ class H2Stream[F[_]: Concurrent](
             case H2Connection.ConnectionType.Client => 
               PseudoHeaders.headersToResponseNoBody(h) match {
                 case Some(resp) => 
-                  response.complete(Either.right(resp.withAttribute(H2Keys.StreamIdentifier, id))) >> {
+                  response.complete(Either.right(resp.withAttribute(H2Keys.StreamIdentifier, id))) >> 
+                  resp.contentLength.traverse(length => state.update(s => s.copy(contentLengthCheck = Some((length, 0))))) >>
+                  {
                     if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
                   }
                 case None => 
@@ -145,7 +147,9 @@ class H2Stream[F[_]: Concurrent](
             case H2Connection.ConnectionType.Server => 
               PseudoHeaders.headersToRequestNoBody(h) match {
                 case Some(req) => 
-                  request.complete(Either.right(req.withAttribute(H2Keys.StreamIdentifier, id))) >> {
+                  request.complete(Either.right(req.withAttribute(H2Keys.StreamIdentifier, id))) >>
+                  req.contentLength.traverse(length => state.update(s => s.copy(contentLengthCheck = Some((length, 0))))) >>
+                  {
                     if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
                   }
                 case None => 
@@ -200,17 +204,25 @@ class H2Stream[F[_]: Concurrent](
           case StreamState.HalfClosedLocal => StreamState.Closed
           case s => s
         } else s.state
+        val sizeReadOk = if (data.endStream){
+            s.contentLengthCheck.forall{ case (max, current) => max === (current + data.data.size)}
+        } else true
+
         val isClosed = newState == StreamState.Closed
 
         val needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
         for {
           _ <- state.update(s => 
-            s.copy(state = newState, readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize)
+            s.copy(
+              state = newState,
+              readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize,
+              contentLengthCheck = s.contentLengthCheck.map{ case (max, current) => (max, current + data.data.size)}
+            )
           )
-          _ <- s.readBuffer.offer(Either.right(data.data))
+          _ <- if (sizeReadOk) s.readBuffer.offer(Either.right(data.data)) else rstStream(H2Error.ProtocolError)
 
-          _ <- if (needsWindowUpdate && !isClosed) enqueue.offer(Chunk.singleton(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize))) else Applicative[F].unit
-          _ <- if (isClosed) onClosed else Applicative[F].unit
+          _ <- if (needsWindowUpdate && !isClosed && sizeReadOk) enqueue.offer(Chunk.singleton(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize))) else Applicative[F].unit
+          _ <- if (isClosed && sizeReadOk) onClosed else Applicative[F].unit
         } yield ()
       case StreamState.Idle => 
         goAway(H2Error.ProtocolError)
@@ -257,8 +269,6 @@ class H2Stream[F[_]: Concurrent](
     _ <- s.readBuffer.offer(Left(t))
     _ <- onClosed
   } yield ()
-
-  
 
   // Important for telling folks we can send more data
   def receiveWindowUpdate(window: Frame.WindowUpdate): F[Unit] = for {
@@ -316,6 +326,7 @@ object H2Stream {
     readWindow: Int,
     request: Deferred[F, Either[Throwable, org.http4s.Request[fs2.Pure]]],
     response: Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]],
-    readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]]
+    readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]],
+    contentLengthCheck: Option[(Long, Long)]
   )
 }
