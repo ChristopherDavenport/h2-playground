@@ -12,6 +12,7 @@ import cats.syntax.all._
 import scodec.bits._
 import scala.concurrent.duration._
 import javax.net.ssl.SSLEngine
+import Frame.Settings.ConnectionSettings.{default => defaultSettings} 
 
 
 /*
@@ -86,7 +87,7 @@ class H2Client[F[_]: Async](
         .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
+      stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(defaultSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
       queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
       hpack <- Resource.eval(Hpack.create[F])
       settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
@@ -170,7 +171,7 @@ object H2Client {
   def impl[F[_]: Async](
     onPushPromise: (org.http4s.Request[fs2.Pure], F[org.http4s.Response[F]]) => F[Outcome[F, Throwable, Unit]], 
     tlsContext: TLSContext[F],
-    settings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(
+    settings: Frame.Settings.ConnectionSettings = defaultSettings.copy(
       initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
       maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
     ),

@@ -15,6 +15,7 @@ import javax.net.ssl.SSLEngine
 import com.comcast.ip4s._
 import scodec.bits._
 import cats.effect.std._
+import Frame.Settings.ConnectionSettings.{default => defaultSettings} 
 
 object H2Server {
 
@@ -24,7 +25,7 @@ object H2Server {
     port: Port, 
     tlsContext: TLSContext[F], 
     httpApp: HttpApp[F], 
-    localSettings: Frame.Settings.ConnectionSettings = Frame.Settings.ConnectionSettings.default.copy(
+    localSettings: Frame.Settings.ConnectionSettings = defaultSettings.copy(
       maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(1000),
       initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
       maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
@@ -48,7 +49,7 @@ object H2Server {
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(localSettings, localSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(defaultSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])

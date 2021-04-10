@@ -10,6 +10,8 @@ import scodec.bits._
 import cats.data._
 import scala.concurrent.duration._
 
+import Frame.Settings.ConnectionSettings.{default => defaultSettings} 
+
 class H2Connection[F[_]](
   host: com.comcast.ip4s.Host,
   port: com.comcast.ip4s.Port,
