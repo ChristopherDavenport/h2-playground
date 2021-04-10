@@ -96,7 +96,7 @@ class H2Connection[F[_]](
           }
           // println(s"Next Write Block Window - data: $fullDataSize window:${s.writeWindow} $s")
 
-          if (fullDataSize <= s.writeWindow) {
+          if (fullDataSize <= s.writeWindow && s.writeWindow > 0) {
             val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
             state.update(s => s.copy(writeWindow = {s.writeWindow - fullDataSize})) >>
             socket.isOpen.ifM(
@@ -306,13 +306,24 @@ class H2Connection[F[_]](
           goAway(H2Error.ProtocolError)
 
         case (settings@Frame.Settings(0,false, _), s) => 
-          state.modify{s => 
-            val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
-            (s.copy(remoteSettings = newSettings), newSettings)
-          }.flatMap{settings => println(s"Connection $host:$port Settings- $settings") // TODO cheating
-          outgoing.offer(Chunk.singleton(Frame.Settings.Ack)) >> // Ack
-          settingsAck.complete(Either.right(settings)).void
-        }
+          for {
+            newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
+            t <- state.modify{s => 
+              val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
+              val differenceInWindow =  newSettings.initialWindowSize.windowSize - s.remoteSettings.initialWindowSize.windowSize
+              (s.copy(remoteSettings = newSettings, writeWindow = s.writeWindow + differenceInWindow, writeBlock = newWriteBlock), (newSettings, differenceInWindow, s.writeBlock))
+            }
+            (settings, difference, oldWriteBlock) = t
+            _ <- oldWriteBlock.complete(Either.right(()))
+            _ <- mapRef.get.flatMap{map => 
+              map.toList.traverse{ case (_, stream) => 
+                stream.modifyWriteWindow(difference)
+              }
+            }
+            _ <- outgoing.offer(Chunk.singleton(Frame.Settings.Ack))
+            _ <- settingsAck.complete(Either.right(settings)).void
+
+          } yield ()
         case (Frame.Settings(0, true, _), s) => Applicative[F].unit
         case (Frame.Settings(_, _, _), s) => 
           println("Received Settings Not Oriented at Identifier 0")
@@ -342,7 +353,7 @@ class H2Connection[F[_]](
                 newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
                 t <- state.modify{s => 
                   val newSize = s.writeWindow + size
-                  val sizeValid = newSize <= Int.MaxValue && newSize >= 0 // Less than 2^31-1 and didn't overflow, going negative
+                  val sizeValid = (s.writeWindow >= 0 &&  newSize >=0 ) || s.writeWindow < 0 // Less than 2^31-1 and didn't overflow, going negative
                   (s.copy(writeBlock = newWriteBlock, writeWindow = s.writeWindow + size), (s.writeBlock, sizeValid))
                 }
                 (oldWriteBlock, valid) = t

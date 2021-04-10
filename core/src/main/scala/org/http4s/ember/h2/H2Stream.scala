@@ -275,7 +275,7 @@ class H2Stream[F[_]: Concurrent](
     newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
     t <- state.modify{s => 
       val newSize = s.writeWindow + window.windowSizeIncrement
-      val sizeValid = newSize <= Int.MaxValue && newSize >= 0 // Less than 2^31-1 and didn't overflow, going negative
+      val sizeValid = (s.writeWindow >= 0 && newSize >= 0) || s.writeWindow < 0 // Less than 2^31-1
       (s.copy(writeBlock = newWriteBlock, writeWindow = newSize), (s.writeBlock, sizeValid))
     }
     (oldWriteBlock, valid) = t
@@ -284,6 +284,16 @@ class H2Stream[F[_]: Concurrent](
       if (!valid) rstStream(H2Error.FlowControlError)
       else oldWriteBlock.complete(Right(())).void
     }
+  } yield ()
+
+  def modifyWriteWindow(amount: Int): F[Unit] = for {
+    newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
+    oldWriteBlock <- state.modify{s => 
+      val newSize = s.writeWindow + amount
+      (s.copy(writeBlock = newWriteBlock, writeWindow = newSize), s.writeBlock)
+    }
+
+    _ <- oldWriteBlock.complete(Right(())).void
   } yield ()
 
 
