@@ -343,17 +343,19 @@ object Frame {
   object Priority {
     val `type`: Byte = 0x2
     def fromRaw(raw: RawFrame): Either[H2Error, Priority] = {
-      if (raw.`type` == `type` && raw.payload.size == 5){
-        val s0 = raw.payload(0)
-        val s1 = raw.payload(1)
-        val s2 = raw.payload(2)
-        val s3 = raw.payload(3)
-        val mod0 = s0 & ~(1 << 7)
-        val exclusive = (s0 & (0x01 << 7)) != 0
-        val dependency = ((mod0 << 24) + (s1 << 16) + (s2 << 8) + (s3 << 0))
-        val weight = raw.payload(4)
+      if (raw.`type` == `type`){
+        if (raw.length === 5) {
+          val s0 = raw.payload(0)
+          val s1 = raw.payload(1)
+          val s2 = raw.payload(2)
+          val s3 = raw.payload(3)
+          val mod0 = s0 & ~(1 << 7)
+          val exclusive = (s0 & (0x01 << 7)) != 0
+          val dependency = ((mod0 << 24) + (s1 << 16) + (s2 << 8) + (s3 << 0))
+          val weight = raw.payload(4)
 
-        Priority(raw.identifier, exclusive, dependency, weight).asRight
+          Priority(raw.identifier, exclusive, dependency, weight).asRight
+        } else H2Error.FrameSizeError.asLeft
       } else Either.left(H2Error.InternalError)
     }
 
@@ -391,7 +393,11 @@ object Frame {
     }
 
     def fromRaw(raw: RawFrame): Either[H2Error, RstStream] = {
-      if (raw.`type` == `type`) RstStream(raw.identifier, raw.payload.toInt(false, ByteOrdering.BigEndian)).asRight
+      if (raw.`type` == `type`) {
+        if (raw.length == 4) {
+          RstStream(raw.identifier, raw.payload.toInt(false, ByteOrdering.BigEndian)).asRight
+        } else H2Error.FrameSizeError.asLeft
+      }
       else Either.left(H2Error.InternalError)
     }
   }
@@ -679,9 +685,8 @@ object Frame {
     def fromRaw(raw: RawFrame): Either[H2Error, Ping] = {
       if (raw.`type` == `type`){
         val ack = (raw.flags & (0x01 << 0)) != 0
-        // val payload = if (raw.payload == emptyBV) None else Some(raw.payload)
-        if (raw.payload.size == 8 && raw.length == 8) Either.right(Ping(raw.identifier, ack, raw.payload))
-        else H2Error.ProtocolError.asLeft
+        if (raw.length == 8) Either.right(Ping(raw.identifier, ack, raw.payload))
+        else H2Error.FrameSizeError.asLeft
       } else H2Error.InternalError.asLeft
     }
 
@@ -770,15 +775,16 @@ object Frame {
     }
 
     def fromRaw(raw: RawFrame): Either[H2Error, WindowUpdate] = {
-      if (raw.`type` == `type` && raw.payload.size == 4 && raw.length == 4){
-        val s0 = (raw.payload(0) & 0xff) 
-        val s1 = (raw.payload(1) & 0xff) << 16
-        val s2 = (raw.payload(2) & 0xff) << 8
-        val s3 = (raw.payload(3) & 0xff) << 0
-        val modS0 = (s0 & ~(1 << 7)) << 24
-        val s = modS0 | s1 | s2 | s3
-
-        WindowUpdate(raw.identifier, s).asRight
+      if (raw.`type` == `type`){
+        if (raw.length == 4){
+          val s0 = (raw.payload(0) & 0xff) 
+          val s1 = (raw.payload(1) & 0xff) << 16
+          val s2 = (raw.payload(2) & 0xff) << 8
+          val s3 = (raw.payload(3) & 0xff) << 0
+          val modS0 = (s0 & ~(1 << 7)) << 24
+          val s = modS0 | s1 | s2 | s3
+          WindowUpdate(raw.identifier, s).asRight
+        } else H2Error.FrameSizeError.asLeft      
       } else H2Error.ProtocolError.asLeft
     }
   }
