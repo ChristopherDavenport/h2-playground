@@ -72,7 +72,7 @@ class H2Connection[F[_]](
     state.get.map(_.remoteHighestStream).flatMap{i => 
       val g = error.toGoAway(i)
       outgoing.offer(Chunk.singleton(g))
-    }
+    } >> H2Connection.KillWithoutMessage().raiseError
   }
 
   def writeLoop: Stream[F, Nothing] = {
@@ -132,7 +132,7 @@ class H2Connection[F[_]](
   def readLoop: Stream[F, Nothing] = {
     def p(acc: ByteVector): Pull[F, Frame, Unit] = {
       if (acc.isEmpty) {
-        Pull.eval(socket.read(65536)).flatMap{
+        Pull.eval(socket.read(localSettings.initialWindowSize.windowSize)).flatMap{
           case Some(chunk) => p(chunk.toByteVector)
           case None => println(s"Connection $host:$port readLoop Terminated with empty"); Pull.done 
         }
@@ -149,7 +149,7 @@ class H2Connection[F[_]](
                 Pull.done
             }
           case None => 
-            Pull.eval(socket.read(65536)).flatMap{
+            Pull.eval(socket.read(localSettings.initialWindowSize.windowSize)).flatMap{
               case Some(chunk) => 
                 p(acc ++ chunk.toByteVector)
               case None =>  println(s"Connection $host:$port readLoop Terminated with $acc");  Pull.done 
@@ -325,8 +325,9 @@ class H2Connection[F[_]](
             outgoing.offer(Chunk.singleton(Frame.Ping.ack.copy(data = bv)))
         case (Frame.Ping(0, true, _),s) => Applicative[F].unit
         case (Frame.Ping(x, _, _),s) => 
-          println("Encounteed NonZero Ping - Protocol Error")
-          goAway(H2Error.ProtocolError)
+          // println("Encounteed NonZero Ping - Protocol Error")
+          // goAway(H2Error.ProtocolError)
+          H2Connection.KillWithoutMessage().raiseError
 
 
         case (w@Frame.WindowUpdate(_, 0), _) => 
@@ -404,10 +405,14 @@ class H2Connection[F[_]](
           else Applicative[F].unit // We Do Nothing with these presently
         case (Frame.Unknown(_), _) => Applicative[F].unit // Ignore Unknown Frames
       }.drain.onFinalizeCase[F]{
+        case Resource.ExitCase.Errored(H2Connection.KillWithoutMessage()) => 
+        Applicative[F].unit.map(_ => println(s"ReadLoop has received that is should kill")) >> 
+          state.update(s => s.copy(closed = true))
         case Resource.ExitCase.Errored(e) => 
           Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e")) >> 
           goAway(H2Error.InternalError) >> 
           state.update(s => s.copy(closed = true))
+        
         case _ => Applicative[F].unit
       } 
 
@@ -426,6 +431,10 @@ object H2Connection {
     headersInProgress: Option[(Frame.Headers, List[Frame.Continuation])],
     pushPromiseInProgress: Option[(Frame.PushPromise, List[Frame.Continuation])]
   )
+
+  final case class KillWithoutMessage() extends RuntimeException with scala.util.control.NoStackTrace
+
+
 
   sealed trait ConnectionType
   object ConnectionType {

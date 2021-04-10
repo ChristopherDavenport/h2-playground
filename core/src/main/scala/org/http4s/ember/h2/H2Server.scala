@@ -136,10 +136,14 @@ object H2Server {
         _ <- Resource.eval(stateRef.update(s => s.copy(writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
         
         s = {
-          def go: Stream[F, Unit] = Stream.awakeDelay(30.seconds).void ++ Stream.eval(tlsSocket.isOpen).ifM(go, Stream.empty)
-          go
+          def go: Pull[F, INothing, Unit] = {
+            Pull.eval(Temporal[F].sleep(1.seconds)) >> 
+              Pull.eval(stateRef.get.map(_.closed))
+                .ifM(Pull.done, go)
+          }
+          go.stream
         }
-        _ <- Resource.eval(s.compile.drain)
+        _ <- s.compile.resource.drain
 
       
       } yield ()
