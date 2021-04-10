@@ -35,7 +35,7 @@ object ServerTest {
 
       case _  => 
           resp.covary[F] // URI needs authority scheme, etc
-          .withAttribute(H2Keys.PushPromises, Request[Pure](Method.GET, uri"https://localhost:8080/foo") :: Nil)
+          // .withAttribute(H2Keys.PushPromises, Request[Pure](Method.GET, uri"https://localhost:8080/foo") :: Nil)
           .pure[F]
         
 

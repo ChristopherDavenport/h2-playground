@@ -483,7 +483,6 @@ object Frame {
 
     // Effect?
     def fromRaw(raw: RawFrame): Either[H2Error, Settings] = {
-      println(raw)
       if (raw.`type` == `type`) {
         val ack = (raw.flags & (0x01 << 0)) != 0
         if (ack && raw.payload.nonEmpty) H2Error.FrameSizeError.asLeft
@@ -551,9 +550,10 @@ object Frame {
       val MAX = SettingsInitialWindowSize(Int.MaxValue-1)
       val MIN = SettingsInitialWindowSize(65536-1)
       def fromInt(windowSize: Int) : Either[H2Error, SettingsInitialWindowSize] = {
-        if (windowSize <= MAX.windowSize && windowSize >= MIN.windowSize) SettingsInitialWindowSize(windowSize).asRight
+        if (windowSize <= MAX.windowSize && windowSize >= 1)// MIN.windowSize) // This appears valid but would be awful
+          SettingsInitialWindowSize(windowSize).asRight
         else {
-          println(s"Found $windowSize, $MAX $MIN")
+          // println(s"Found $windowSize, $MAX $MIN")
           H2Error.FlowControlError.asLeft
         }
       }
