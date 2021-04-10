@@ -94,19 +94,19 @@ object Frame {
     }
   }
 
-  def fromRaw(rawFrame: RawFrame): Option[Either[H2Error, Frame]] = {
+  def fromRaw(rawFrame: RawFrame): Either[H2Error, Frame] = {
     rawFrame.`type` match {
-      case Data.`type` => Data.fromRaw(rawFrame).some
-      case Headers.`type` => Headers.fromRaw(rawFrame).some
-      case Priority.`type` => Priority.fromRaw(rawFrame).some
-      case RstStream.`type` => RstStream.fromRaw(rawFrame).some
-      case Settings.`type` => Settings.fromRaw(rawFrame).some
-      case PushPromise.`type` => PushPromise.fromRaw(rawFrame).some
-      case Ping.`type` => Ping.fromRaw(rawFrame).some
-      case GoAway.`type` => GoAway.fromRaw(rawFrame).some
-      case WindowUpdate.`type` => WindowUpdate.fromRaw(rawFrame).some
-      case Continuation.`type` => Continuation.fromRaw(rawFrame).some
-      case _ => None
+      case Data.`type` => Data.fromRaw(rawFrame)
+      case Headers.`type` => Headers.fromRaw(rawFrame)
+      case Priority.`type` => Priority.fromRaw(rawFrame)
+      case RstStream.`type` => RstStream.fromRaw(rawFrame)
+      case Settings.`type` => Settings.fromRaw(rawFrame)
+      case PushPromise.`type` => PushPromise.fromRaw(rawFrame)
+      case Ping.`type` => Ping.fromRaw(rawFrame)
+      case GoAway.`type` => GoAway.fromRaw(rawFrame)
+      case WindowUpdate.`type` => WindowUpdate.fromRaw(rawFrame)
+      case Continuation.`type` => Continuation.fromRaw(rawFrame)
+      case _ => Unknown(rawFrame).asRight
     }
   }
 
@@ -121,10 +121,16 @@ object Frame {
     case g: GoAway => GoAway.toRaw(g)
     case w: WindowUpdate => WindowUpdate.toRaw(w)
     case c: Continuation => Continuation.toRaw(c)
+    case unknown: Unknown => unknown.raw
   }
 
   def toByteVector(frame: Frame): ByteVector = 
     toRaw.andThen(RawFrame.toByteVector)(frame)
+
+
+  case class Unknown(raw: RawFrame) extends Frame {
+
+  }
 
   /*
     +---------------+

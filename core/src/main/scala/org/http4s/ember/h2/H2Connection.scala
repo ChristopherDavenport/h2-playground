@@ -140,17 +140,13 @@ class H2Connection[F[_]](
         Frame.RawFrame.fromByteVector(acc) match {
           case Some((raw, leftover)) => 
             Frame.fromRaw(raw) match {
-              case Some(Right(frame)) => 
+              case Right(frame) => 
                 Pull.output1(frame) >>
                 p(leftover)
-              case Some(Left(e)) => 
+              case Left(e) => 
                 s"Connection $host:$port readLoop Terminated invalid Raw to Frame"
                 Pull.eval(goAway(e)) >> 
                 Pull.done
-              case None => 
-                // println(s"Connection $host:$port readLoop Terminated invalid Raw to Frame, invalid frame type $raw")
-                // Pull.eval(goAway(H2Error.ProtocolError)) >> Pull.done
-                p(leftover) // Ignore Unrecognized frames
             }
           case None => 
             Pull.eval(socket.read(65536)).flatMap{
@@ -406,6 +402,7 @@ class H2Connection[F[_]](
         case (Frame.Priority(i, _, i2, _), s) =>
           if (i == i2) goAway(H2Error.ProtocolError)  // Can't depend on yourself
           else Applicative[F].unit // We Do Nothing with these presently
+        case (Frame.Unknown(_), _) => Applicative[F].unit // Ignore Unknown Frames
       }.drain.onFinalizeCase[F]{
         case Resource.ExitCase.Errored(e) => 
           Applicative[F].unit.map(_ => println(s"ReadLoop has errored: $e")) >> 
