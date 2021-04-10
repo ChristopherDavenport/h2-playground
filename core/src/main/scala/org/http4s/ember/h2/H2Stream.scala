@@ -138,7 +138,9 @@ class H2Stream[F[_]: Concurrent](
                   response.complete(Either.right(resp.withAttribute(H2Keys.StreamIdentifier, id))) >> {
                     if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
                   }
-                case None => rstStream(H2Error.ProtocolError)
+                case None => 
+                  println("Headers Unable to be parsed")
+                  rstStream(H2Error.ProtocolError)
               }
             case H2Connection.ConnectionType.Server => 
               PseudoHeaders.headersToRequestNoBody(h) match {
@@ -146,7 +148,9 @@ class H2Stream[F[_]: Concurrent](
                   request.complete(Either.right(req.withAttribute(H2Keys.StreamIdentifier, id))) >> {
                     if (newstate == StreamState.Closed) onClosed else Applicative[F].unit
                   }
-                case None => rstStream(H2Error.ProtocolError)
+                case None => 
+                  println("Headers Unable to be parsed")
+                  rstStream(H2Error.ProtocolError)
               }
           }
         } yield ()

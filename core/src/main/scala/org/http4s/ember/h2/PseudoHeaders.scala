@@ -95,21 +95,16 @@ object PseudoHeaders {
 
   def headersToResponseNoBody(headers: NonEmptyList[(String, String)]): Option[Response[fs2.Pure]] = {
     // TODO Duplicate Check
-    val statusL = headers.collect{
-      case (PseudoHeaders.STATUS, value) => 
+    val statusO = findWithNoDuplicates(headers.toList)(_._1 === PseudoHeaders.STATUS).map(_._2).flatMap{value => 
         Status.fromInt(value.toInt).toOption
-      case (_, _) => None
     }
-    if (statusL.size === 1) {
-      val h = Headers(
-        headers.filterNot(t => t._1 == PseudoHeaders.STATUS)
-        .map(t => Header.Raw(org.typelevel.ci.CIString(t._1), t._2)):_*
-      )
-      val status = statusL.head // These lets us fail if duplicate is seen
-      status.map(s => 
-        Response(status = s, httpVersion = HttpVersion.`HTTP/2.0`, headers = h)
-      )
-    } else None
+    val h = Headers(
+      headers.filterNot(t => t._1 == PseudoHeaders.STATUS)
+      .map(t => Header.Raw(org.typelevel.ci.CIString(t._1), t._2)):_*
+    )
+    statusO.map(s =>
+      Response(status = s, httpVersion = HttpVersion.`HTTP/2.0`, headers = h)
+    )
   }
 
   def findWithNoDuplicates[A](l: List[A])(bool: A => Boolean): Option[A] = {

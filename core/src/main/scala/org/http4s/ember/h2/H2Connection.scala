@@ -72,7 +72,8 @@ class H2Connection[F[_]](
     state.get.map(_.remoteHighestStream).flatMap{i => 
       val g = error.toGoAway(i)
       outgoing.offer(Chunk.singleton(g))
-    } >> H2Connection.KillWithoutMessage().raiseError
+    } >> 
+    H2Connection.KillWithoutMessage().raiseError
   }
 
   def writeLoop: Stream[F, Nothing] = {
