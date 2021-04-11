@@ -25,7 +25,9 @@ object H2Server {
                                 Nothing  => Http1
                 No                       => Http1
   
-  Http1 => Request
+  Http1 =>  Client Prelude               => Http2 // Http2-prior-kno
+            
+            Request
             Connection: Upgrade, HTTP2-Settings
             Upgrade: h2c
             HTTP2-Settings: <base64url encoding of HTTP/2 SETTINGS payload>
@@ -81,7 +83,9 @@ object H2Server {
           Stream.fromQueueUnterminated(closed)
             .map(i => 
               Stream.eval(
-                (Temporal[F].sleep(1.seconds) >> ref.update(m => m - i)).timeout(15.seconds).attempt.start
+                // Max Time After Close We Will Still Accept Messages
+                (Temporal[F].sleep(1.seconds) >> 
+                ref.update(m => m - i)).timeout(15.seconds).attempt.start
               )
             ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
             .compile
@@ -179,22 +183,19 @@ object H2Server {
                   }.some
                 )
               )
-            // _ = println("TLS Socket Acquired")
             _ <- Resource.eval(tlsSocket.write(Chunk.empty))
             protocol <- Resource.eval(tlsSocket.applicationProtocol)
-              // .evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
             } yield tlsSocket
           )
         }
         _ <- fromSocket(socket, httpApp, localSettings)
-        _ <- Resource.eval(socket.endOfInput >> socket.endOfOutput)
       } yield ()
 
       Stream.resource(r).handleErrorWith(e => 
         Stream.eval(Sync[F].delay(println(s"Encountered Error With Connection $e")))
       ) 
 
-    }.parJoinUnbounded
+    }.parJoin(200)
       .compile
       .resource
       .drain

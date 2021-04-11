@@ -422,7 +422,7 @@ class H2Connection[F[_]](
           goAway(H2Error.InternalError) >> 
           state.update(s => s.copy(closed = true))
         
-        case _ => Applicative[F].unit
+        case _ => state.update(s => s.copy(closed = true))
       } 
 
 
