@@ -55,11 +55,11 @@ class H2Client[F[_]: Async](
 ){
   import org.http4s._
 
-  def getOrCreate(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port): F[H2Connection[F]] = 
+  def getOrCreate(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean): F[H2Connection[F]] = 
     connections.get.map(_.get((host, port)).map(_._1)).flatMap{
       case Some(connection) => Applicative[F].pure(connection)
       case None => 
-        createConnection(host, port).flatMap(tup => 
+        createConnection(host, port, useTLS).flatMap(tup => 
           connections.modify{map => 
             val current = map.get((host, port))
             val newMap = current.fold(map.+(((host, port), tup)))(_ => map)
@@ -76,14 +76,21 @@ class H2Client[F[_]: Async](
         )
     }
 
-  def createConnection(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port): F[(H2Connection[F], F[Unit])] = {
+  def createConnection(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean): F[(H2Connection[F], F[Unit])] = {
     val r = for {
       baseSocket <- sg.client(SocketAddress(host, port))
-      tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
-        l.find(_ === "h2").getOrElse("http/1.1")
-      }.some), None)
-      _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-      _ <- Resource.eval(tlsSocket.applicationProtocol)
+      tlsSocket <- {
+        if (useTLS){
+          for {
+            tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
+              l.find(_ === "h2").getOrElse("http/1.1")
+            }.some), None)
+            _ <- Resource.eval(tlsSocket.write(Chunk.empty))
+            _ <- Resource.eval(tlsSocket.applicationProtocol)
+          } yield tlsSocket
+        } else Resource.pure[F, Socket[F]](baseSocket)
+      }
+      
         // .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
@@ -145,15 +152,31 @@ class H2Client[F[_]: Async](
 
   def run(req: Request[F]): Resource[F, Response[F]] = {
     // Host And Port are required
-    val host: com.comcast.ip4s.Host = req.uri.host.flatMap {
-      case regname: org.http4s.Uri.RegName => regname.toHostname
-      case op: org.http4s.Uri.Ipv4Address => op.address.some
-      case op: org.http4s.Uri.Ipv6Address => op.address.some
-    }.get
-    val port = com.comcast.ip4s.Port.fromInt(req.uri.port.getOrElse(443)).get
 
     for {
-      connection <- Resource.eval(getOrCreate(host, port))
+      host <- Resource.eval(
+        Sync[F].delay{
+          req.uri.host.flatMap {
+            case regname: org.http4s.Uri.RegName => regname.toHostname
+            case op: org.http4s.Uri.Ipv4Address => op.address.some
+            case op: org.http4s.Uri.Ipv6Address => op.address.some
+          }.get
+        }
+      )
+      port <- Resource.eval(
+        Sync[F].delay{
+          com.comcast.ip4s.Port.fromInt(req.uri.port.getOrElse(443)).get
+        }
+      )
+      useTLS = req.uri.scheme.map(_.value) match {
+        case Some("http") => false
+        case Some("https") => true
+        // How Do we Choose when to use TLS, for http/1.1 this is simple its with
+        // this, but with http2, there can be arbitrary schemes
+        case Some(_) => true
+        case None => true
+      }
+      connection <- Resource.eval(getOrCreate(host, port, useTLS))
       // Stream Order Must Be Correct. So 
       stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateLocalStream.flatMap(stream =>
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
