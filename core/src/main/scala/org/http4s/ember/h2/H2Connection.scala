@@ -430,7 +430,7 @@ private[h2] class H2Connection[F[_]](
 
 }
 
-object H2Connection {
+private[h2] object H2Connection {
   case class State[F[_]](
     remoteSettings: H2Frame.Settings.ConnectionSettings,
     writeWindow: Int,

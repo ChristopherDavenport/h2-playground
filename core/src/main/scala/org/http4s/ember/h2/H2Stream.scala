@@ -343,7 +343,7 @@ private[h2] class H2Stream[F[_]: Concurrent](
 
 }
 
-object H2Stream {
+private[h2] object H2Stream {
   case class State[F[_]](
     state: StreamState,
     writeWindow: Int,

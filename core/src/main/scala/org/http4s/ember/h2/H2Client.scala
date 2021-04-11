@@ -149,7 +149,7 @@ private[h2] class H2Client[F[_]: Async](
   }
 
 
-  def run(req: Request[F]): Resource[F, Response[F]] = {
+  def runHttp2Only(req: Request[F]): Resource[F, Response[F]] = {
     // Host And Port are required
 
     for {
@@ -172,11 +172,12 @@ private[h2] class H2Client[F[_]: Async](
         case Some("https") => true
         // How Do we Choose when to use TLS, for http/1.1 this is simple its with
         // this, but with http2, there can be arbitrary schemes
+        // but also probably wrong if doing websockets over http/1.1
         case Some(_) => true
         case None => true
       }
       connection <- Resource.eval(getOrCreate(host, port, useTLS))
-      // Stream Order Must Be Correct. So 
+      // Stream Order Must Be Correct, so we must grab the global lock
       stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateLocalStream.flatMap(stream =>
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
       )))(stream => connection.mapRef.update(m => m - stream.id))
@@ -193,10 +194,7 @@ object H2Client {
   def impl[F[_]: Async](
     onPushPromise: (org.http4s.Request[fs2.Pure], F[org.http4s.Response[F]]) => F[Outcome[F, Throwable, Unit]], 
     tlsContext: TLSContext[F],
-    settings: H2Frame.Settings.ConnectionSettings = defaultSettings.copy(
-      initialWindowSize = H2Frame.Settings.SettingsInitialWindowSize.MAX,
-      maxFrameSize = H2Frame.Settings.SettingsMaxFrameSize.MAX
-    ),
+    settings: H2Frame.Settings.ConnectionSettings = defaultSettings
   ): Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()
@@ -215,6 +213,6 @@ object H2Client {
         .drain
         .background
       h2 = new H2Client(sg, settings, tlsContext, map, onPushPromise)
-    } yield org.http4s.client.Client(h2.run)
+    } yield org.http4s.client.Client(h2.runHttp2Only)
   }
 }

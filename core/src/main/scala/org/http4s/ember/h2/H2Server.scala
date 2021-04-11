@@ -15,6 +15,7 @@ import javax.net.ssl.SSLEngine
 import com.comcast.ip4s._
 import scodec.bits._
 import cats.effect.std._
+import org.typelevel.ci._
 import H2Frame.Settings.ConnectionSettings.{default => defaultSettings} 
 
 object H2Server {
@@ -23,7 +24,7 @@ object H2Server {
   TlsContext => Yes => ALPN =>  h2       => HTTP2
                                 http/1.1 => HTTP1
                                 Nothing  => Http1
-                No                       => Http1
+                No  =>                      Http1
   
   Http1 =>  Client Prelude               => Http2 // Http2-prior-kno
             
@@ -42,29 +43,87 @@ object H2Server {
 
   */
 
+  private val upgradeResponse: Response[fs2.Pure] = Response(
+    status = Status.SwitchingProtocols,
+    httpVersion = HttpVersion.`HTTP/1.1`,
+    headers = Headers(
+      "connection" -> "Upgrade",
+      "upgrade" -> "h2c"
+    )
+  )
+  def upgradeHttpRoute[F[_]: Concurrent](upgradeRef: Ref[F, Option[H2Frame.Settings.ConnectionSettings]]): HttpRoutes[F] = 
+    cats.data.Kleisli[({type L[A] = cats.data.OptionT[F,A]})#L, Request[F], Response[F]] { (req: Request[F]) => 
+      val connectionCheck = req.headers.get[org.http4s.headers.Connection].exists(connection => 
+        connection.values.contains_(ci"upgrade") && connection.values.contains_(ci"http2-settings")
+      )
 
+      // checks are cascading so we execute the least amount of work
+      // if there is no upgrade, which is the likely case.
+      val upgradeCheck = connectionCheck && {
+        req.headers.get(ci"upgrade").exists(upgrade => 
+          upgrade.map(r => r.value).exists(_ === "h2c")
+        )
+      }
+
+      val settings : Option[H2Frame.Settings.ConnectionSettings] = if (upgradeCheck) {
+        req.headers.get(ci"http2-settings").collectFirstSome(settings => 
+          settings.map(_.value).collectFirstSome{value => 
+            for {
+              bv <- ByteVector.fromBase64(value)
+              t <- H2Frame.RawFrame.fromByteVector(bv)
+              (raw, _) = t
+              settings <- H2Frame.Settings.fromRaw(raw).toOption
+            } yield H2Frame.Settings.updateSettings(settings, H2Frame.Settings.ConnectionSettings.default)
+          }
+        )
+      } else None
+      val settingsCheck = settings.isDefined
+      val upgrade = connectionCheck && upgradeCheck && settingsCheck
+      if (upgrade){
+        cats.data.OptionT.liftF(req.body.compile.drain) >> 
+        cats.data.OptionT.liftF(upgradeRef.set(settings)) >>
+        cats.data.OptionT.some(upgradeResponse.covary[F])
+      } else cats.data.OptionT.none
+    }
+
+  // Call on a new connection for http2-prior-knowledge
+  // If left 1.1 if right 2
+  def checkConnectionPreface[F[_]: MonadThrow](socket: Socket[F]): F[Either[ByteVector, Unit]] = {
+    socket.read(Preface.clientBV.size.toInt).flatMap{
+      case Some(s) => 
+        val received = s.toByteVector
+        if (received == Preface.clientBV) Applicative[F].pure(Either.right(()))
+        else Applicative[F].pure(Either.left(received))
+      case None => 
+        new Throwable("Input Closed Before Receiving Data").raiseError
+    }
+  }
+
+  // For Anything that is guaranteed to only be h2 this method will fail
+  // unless the connection preface is there. For example after ALPN negotiation
+  // on an SSL connection.
+  def requireConnectionPreface[F[_]: MonadThrow](socket: Socket[F]): F[Unit] = 
+    checkConnectionPreface(socket).flatMap{
+      case Left(e) => new Throwable("Invalid Connection Preface").raiseError
+      case Right(unit) => unit.pure[F]
+    }
+
+  // This is the full h2 management of a socket
+  // AFTER the connection preface.
+  // allowing delegation
   def fromSocket[F[_]: Async: Parallel](
     socket: Socket[F],
     httpApp: HttpApp[F],
-    localSettings: H2Frame.Settings.ConnectionSettings
+    localSettings: H2Frame.Settings.ConnectionSettings,
+      // Only Used for http1 upgrade where remote settings are provided prior to escalation
+    initialRemoteSettings: H2Frame.Settings.ConnectionSettings = defaultSettings 
   ): Resource[F, Unit] = {
     for {
         address <- Resource.eval(socket.remoteAddress)
         (remotehost, remoteport) = (address.host, address.port)
-        _ <- Resource.eval(
-          socket.read(Preface.clientBV.size.toInt).flatMap{
-            case Some(s) => 
-              val received = s.toByteVector
-              if (received == Preface.clientBV) Applicative[F].unit
-              else new Throwable("Client Preface Incorrect").raiseError
-            case None => 
-              new Throwable("Client Preface Incorrect").raiseError
-          }
-        )
-
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
-        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(defaultSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
+        stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(initialRemoteSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
         queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[H2Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
         settingsAck <- Resource.eval(Deferred[F, Either[Throwable, H2Frame.Settings.ConnectionSettings]])
@@ -151,24 +210,14 @@ object H2Server {
       } yield ()
   }
 
-
-
-
   def impl[F[_]: Async: Parallel](
     host: Host, 
     port: Port, 
     tlsContextOpt: Option[TLSContext[F]], 
     httpApp: HttpApp[F], 
-    localSettings: H2Frame.Settings.ConnectionSettings = defaultSettings.copy(
-      maxConcurrentStreams = H2Frame.Settings.SettingsMaxConcurrentStreams(1000),
-      initialWindowSize = H2Frame.Settings.SettingsInitialWindowSize.MAX,
-      maxFrameSize = H2Frame.Settings.SettingsMaxFrameSize.MAX
-    )
+    localSettings: H2Frame.Settings.ConnectionSettings = defaultSettings
   ) = for {
     sg <- Network[F].socketGroup()
-    // wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
-    // currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
-    // tlsContext <- Resource.eval(Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray))//)
     _ <- sg.server(Some(host),Some(port)).map{socket => 
       val r = for {
         socket <- {
@@ -188,6 +237,7 @@ object H2Server {
             } yield tlsSocket
           )
         }
+        _ <- Resource.eval(requireConnectionPreface(socket))
         _ <- fromSocket(socket, httpApp, localSettings)
       } yield ()
 
