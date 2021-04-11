@@ -32,17 +32,18 @@ object ClientTest {
       val p = c.run(org.http4s.Request[F](
         org.http4s.Method.GET, 
         // uri = uri"https://github.com/"
-        // uri = uri"https://en.wikipedia.org/wiki/HTTP/2"
+        uri = uri"https://en.wikipedia.org/wiki/HTTP/2"
         // uri = uri"https://twitter.com/"
         // uri = uri"https://banno.com/"
         // uri = uri"http://http2.golang.org/reqinfo"
-        uri = uri"http://localhost:8080/"
+        // uri = uri"http://en.wikipedia.org/wiki/HTTP/2"
+        // uri = uri"http://localhost:8080/"
         // uri = uri"https://www.nikkei.com/" // PUSH PROMISES
-      ).withAttribute(H2Keys.Http2PriorKnowledge, ()))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
+      ))//.withAttribute(H2Keys.Http2PriorKnowledge, ()))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
         .use(resp => resp.body.compile.drain >> Sync[F].delay(println(s"Resp $resp")))
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled
-        p 
+        p >> p
         // (p,p,p, p).parTupled
         // Temporal[F].sleep(10.second) >> 
         // p >> Temporal[F].sleep(10.second) >> p

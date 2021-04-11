@@ -54,6 +54,7 @@ private[h2] class H2Client[F[_]: Async](
   onPushPromise: (org.http4s.Request[fs2.Pure], F[org.http4s.Response[F]]) => F[Outcome[F, Throwable, Unit]]
 ){
   import org.http4s._
+  import H2Client._
 
   def getOrCreate(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean, priorKnowledge: Boolean): F[H2Connection[F]] = 
     connections.get.map(_.get((host, port)).map(_._1)).flatMap{
@@ -75,15 +76,12 @@ private[h2] class H2Client[F[_]: Async](
           }
         )
       }
-  sealed trait SocketType
-  case object Http2 extends SocketType
-  case object Http1 extends SocketType
 
   // 
   def createConnection(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean, priorKnowledge: Boolean): Resource[F, H2Connection[F]] = 
     createSocket(host, port, useTLS, priorKnowledge).flatMap{
       case (socket, Http2) => fromSocket(ByteVector.empty, socket, host, port)
-      case (socket, Http1) => new Throwable("createConnection only supports http2, and this is not available").raiseError
+      case (socket, Http1) => Resource.eval(H2Client.InvalidSocketType().raiseError)
     }
 
   // This is currently how we create http2 only sockets, will need to actually handle which
@@ -223,21 +221,64 @@ object H2Client {
   ): Resource[F, org.http4s.client.Client[F]] = {
     for {
       sg <- Network[F].socketGroup()
-      map <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
+      mapH2 <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
+      socketMap <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), SocketType]()))
+      http1Client <- org.http4s.ember.client.EmberClientBuilder.default.build
+
       _ <- Stream.awakeDelay(5.seconds)
         .evalMap(_ => 
-          map.get
+          mapH2.get
         ).flatMap(m => Stream.emits(m.toList))
         .evalMap{
           case (t, (connection, shutdown)) => 
             connection.state.get.flatMap{s => 
-              if (s.closed) map.update(m => m - t) >> shutdown else Applicative[F].unit
+              if (s.closed) mapH2.update(m => m - t) >> shutdown else Applicative[F].unit
             }.attempt
         }
         .compile
         .drain
         .background
-      h2 = new H2Client(sg, settings, tlsContext, map, onPushPromise)
-    } yield org.http4s.client.Client(h2.runHttp2Only)
+      h2 = new H2Client(sg, settings, tlsContext, mapH2, onPushPromise)
+    } yield org.http4s.client.Client{req => 
+      for {
+        host <- Resource.eval(
+          Sync[F].delay{
+            req.uri.host.flatMap {
+              case regname: org.http4s.Uri.RegName => regname.toHostname
+              case op: org.http4s.Uri.Ipv4Address => op.address.some
+              case op: org.http4s.Uri.Ipv6Address => op.address.some
+            }.get
+          }
+        )
+        port <- Resource.eval(
+          Sync[F].delay{
+            com.comcast.ip4s.Port.fromInt(req.uri.port.getOrElse(443)).get
+          }
+        )
+        socketType <- Resource.eval(
+          socketMap.get.map(_.get(host -> port))
+        )
+        resp <- socketType match {
+          case Some(Http2) => h2.runHttp2Only(req)
+          case Some(Http1) => http1Client.run(req)
+          case None => 
+          (
+            h2.runHttp2Only(req) <* 
+            Resource.eval(socketMap.update( s=> s + ((host, port) -> Http2)))
+          ).handleErrorWith{
+            case InvalidSocketType() => 
+              Resource.eval(socketMap.update( s=> s + ((host, port) -> Http1))) >> 
+              http1Client.run(req)
+            case e => e.raiseError
+          }
+        }
+      } yield resp
+    }
   }
+
+  sealed trait SocketType
+  case object Http2 extends SocketType
+  case object Http1 extends SocketType
+
+  private[h2] case class InvalidSocketType() extends RuntimeException("createConnection only supports http2, and this is not available")
 }
