@@ -36,9 +36,9 @@ object ClientTest {
         // uri = uri"https://twitter.com/"
         // uri = uri"https://banno.com/"
         // uri = uri"http://http2.golang.org/reqinfo"
-        // uri = uri"http://localhost:8080/"
-        uri = uri"https://www.nikkei.com/" // PUSH PROMISES
-      ))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
+        uri = uri"http://localhost:8080/"
+        // uri = uri"https://www.nikkei.com/" // PUSH PROMISES
+      ).withAttribute(H2Keys.Http2PriorKnowledge, ()))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
         .use(resp => resp.body.compile.drain >> Sync[F].delay(println(s"Resp $resp")))
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled

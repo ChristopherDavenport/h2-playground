@@ -9,6 +9,7 @@ import fs2.io.net._
 import fs2.io.net.tls._
 import cats._
 import cats.syntax.all._
+import cats.conversions._
 import scodec.bits._
 import scala.concurrent.duration._
 import javax.net.ssl.SSLEngine
@@ -54,11 +55,11 @@ private[h2] class H2Client[F[_]: Async](
 ){
   import org.http4s._
 
-  def getOrCreate(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean): F[H2Connection[F]] = 
+  def getOrCreate(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean, priorKnowledge: Boolean): F[H2Connection[F]] = 
     connections.get.map(_.get((host, port)).map(_._1)).flatMap{
       case Some(connection) => Applicative[F].pure(connection)
       case None => 
-        createConnection(host, port, useTLS).flatMap(tup => 
+        createConnection(host, port, useTLS, priorKnowledge).allocated.flatMap(tup => 
           connections.modify{map => 
             val current = map.get((host, port))
             val newMap = current.fold(map.+(((host, port), tup)))(_ => map)
@@ -73,24 +74,50 @@ private[h2] class H2Client[F[_]: Async](
               connection.pure[F]
           }
         )
+      }
+  sealed trait SocketType
+  case object Http2 extends SocketType
+  case object Http1 extends SocketType
+
+  // 
+  def createConnection(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean, priorKnowledge: Boolean): Resource[F, H2Connection[F]] = 
+    createSocket(host, port, useTLS, priorKnowledge).flatMap{
+      case (socket, Http2) => fromSocket(ByteVector.empty, socket, host, port)
+      case (socket, Http1) => new Throwable("createConnection only supports http2, and this is not available").raiseError
     }
 
-  def createConnection(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean): F[(H2Connection[F], F[Unit])] = {
-    val r = for {
-      baseSocket <- sg.client(SocketAddress(host, port))
-      socket <- {
-        if (useTLS){
-          for {
-            tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
-              l.find(_ === "h2").getOrElse("http/1.1")
-            }.some), None)
-            _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-            _ <- Resource.eval(tlsSocket.applicationProtocol)
-          } yield tlsSocket
-        } else Resource.pure[F, Socket[F]](baseSocket)
+  // This is currently how we create http2 only sockets, will need to actually handle which
+  // protocol to take
+  def createSocket(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean, priorKnowledge: Boolean): Resource[F, (Socket[F], SocketType)] = for {
+    baseSocket <- sg.client(SocketAddress(host, port))
+    socket <- {
+      if (useTLS){
+        for {
+          tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
+            l.find(_ === "h2").getOrElse("http/1.1")
+          }.some), None)
+          _ <- Resource.eval(tlsSocket.write(Chunk.empty))
+          protocol <- Resource.eval(tlsSocket.applicationProtocol).map(Option(_))
+          socketType <- protocol match {
+            case Some("h2") =>  Resource.pure(Http2)
+            case Some("http/1.1") => Resource.pure(Http1)
+            case Some(other) => Resource.eval(new Throwable("Unknown Protocol Received").raiseError[F, SocketType])
+            case None => Resource.eval(Http1.pure[F])
+          }
+        } yield (tlsSocket, socketType)
+      } else {
+        val socketType = if (priorKnowledge) Http2 else Http1
+        val out = (baseSocket, socketType)
+        Resource.pure(out)
       }
-      
-        // .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
+    }
+  } yield socket
+    
+
+  // This Socket Becomes an Http2 Socket
+  def fromSocket(acc: ByteVector, socket: Socket[F], host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port): Resource[F, H2Connection[F]] = {
+    for {
+      _ <- Resource.eval(socket.write(Chunk.byteVector(Preface.clientBV)))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
       stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(defaultSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
@@ -101,7 +128,7 @@ private[h2] class H2Client[F[_]: Async](
       // data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
       created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
       closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
-      h2 = new H2Connection(host, port, H2Connection.ConnectionType.Client, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, ByteVector.empty, socket)
+      h2 = new H2Connection(host, port, H2Connection.ConnectionType.Client, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, acc, socket)
       bgRead <- h2.readLoop.compile.drain.background
       bgWrite <- h2.writeLoop.compile.drain.background
       _ <- 
@@ -138,14 +165,11 @@ private[h2] class H2Client[F[_]: Async](
             .onError{ case e => Sync[F].delay(println(s"Server Connection Processing Halted $e"))}
             .background
 
-      _ <- Resource.make(socket.write(Chunk.byteVector(Preface.clientBV)))(_ => 
-          socket.write(Chunk.byteVector(H2Frame.toByteVector(H2Frame.GoAway(0, 0, H2Error.NoError.value, None))))
-      )
+      
       _ <- Resource.eval(h2.outgoing.offer(Chunk.singleton(H2Frame.Settings.ConnectionSettings.toSettings(localSettings))))
       settings <- Resource.eval(h2.settingsAck.get.rethrow)
       _ <- Resource.eval(stateRef.update(s => s.copy(remoteSettings = settings, writeWindow = s.remoteSettings.initialWindowSize.windowSize) ))
     } yield h2
-    r.allocated
   }
 
 
@@ -176,7 +200,8 @@ private[h2] class H2Client[F[_]: Async](
         case Some(_) => true
         case None => true
       }
-      connection <- Resource.eval(getOrCreate(host, port, useTLS))
+      priorKnowledge = req.attributes.lookup(H2Keys.Http2PriorKnowledge).isDefined
+      connection <- Resource.eval(getOrCreate(host, port, useTLS, priorKnowledge))
       // Stream Order Must Be Correct, so we must grab the global lock
       stream <- Resource.make(connection.streamCreateAndHeaders.use(_ => connection.initiateLocalStream.flatMap(stream =>
         stream.sendHeaders(PseudoHeaders.requestToHeaders(req), false).as(stream)
