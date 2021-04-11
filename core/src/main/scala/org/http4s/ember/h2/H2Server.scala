@@ -108,7 +108,7 @@ object H2Server {
                     )
                   }
                 }
-                _ <- Console.make[F].println("Writing Streams Commpleted")
+                // _ <- Console.make[F].println("Writing Streams Commpleted")
                 responses <- streams.parTraverse{ case (req, stream) => 
                   for {
                     resp <- httpApp(req.covary[F])

@@ -86,7 +86,7 @@ class H2Connection[F[_]](
               } >> state.update(s => s.copy(closed = true)).as(g).widen[Frame]
         case otherwise => otherwise.pure[F]
       }
-      .debug(formatter = {c => s"Connection $host:$port Write- $c"})
+      // .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .chunks
       .evalMap{chunk => 
         def go(chunk: Chunk[Frame]): F[Unit] = state.get.flatMap{ s =>
@@ -161,7 +161,7 @@ class H2Connection[F[_]](
     }
     p(ByteVector.empty).stream
   }
-      .debug(formatter = {c => s"Connection $host:$port Read- $c"})
+      // .debug(formatter = {c => s"Connection $host:$port Read- $c"})
       .evalMap(f => state.get.map(s => (f, s)))
       .evalTap{
         // Headers and Continuation Frames are Stateful

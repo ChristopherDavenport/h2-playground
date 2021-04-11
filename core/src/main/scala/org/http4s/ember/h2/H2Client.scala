@@ -67,10 +67,10 @@ class H2Client[F[_]: Async](
             (newMap, out)
           }.flatMap{
             case Right((connection, shutdown)) => 
-              println("Using Reused Connection")
+              // println("Using Reused Connection")
               shutdown.as(connection)
             case Left(connection) => 
-              println("Using Created Connection")
+              // println("Using Created Connection")
               connection.pure[F]
           }
         )
@@ -84,7 +84,7 @@ class H2Client[F[_]: Async](
       }.some), None)
       _ <- Resource.eval(tlsSocket.write(Chunk.empty))
       _ <- Resource.eval(tlsSocket.applicationProtocol)
-        .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
+        // .evalMap(s => Sync[F].delay(println(s"Protocol: $s - $host:$port")))
       ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
       initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
       stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(defaultSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
@@ -102,7 +102,7 @@ class H2Client[F[_]: Async](
           Stream.fromQueueUnterminated(closed)
             .repeat
             .evalMap{i =>
-              println(s"Removed Stream $i")
+              // println(s"Removed Stream $i")
               ref.update(m => m - i)
             }.compile.drain.background
       created <-

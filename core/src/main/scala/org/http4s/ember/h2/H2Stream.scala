@@ -74,7 +74,6 @@ class H2Stream[F[_]: Concurrent](
     }
     
   def sendData(bv: ByteVector, endStream: Boolean): F[Unit] = state.get.flatMap{ s => 
-    // println(s"Send Data Attempting $bv $s")
     s.state match {
       case StreamState.Open | StreamState.HalfClosedRemote => 
         if (bv.size.toInt <= s.writeWindow && s.writeWindow > 0){ 
