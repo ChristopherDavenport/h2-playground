@@ -337,10 +337,7 @@ class H2Connection[F[_]](
             outgoing.offer(Chunk.singleton(Frame.Ping.ack.copy(data = bv)))
         case (Frame.Ping(0, true, _),s) => Applicative[F].unit
         case (Frame.Ping(x, _, _),s) => 
-          // println("Encounteed NonZero Ping - Protocol Error")
-          // goAway(H2Error.ProtocolError)
-          H2Connection.KillWithoutMessage().raiseError
-
+          goAway(H2Error.ProtocolError)
 
         case (w@Frame.WindowUpdate(_, 0), _) => 
           println("Encounted 0 Sized Window Update - Procol Error")
