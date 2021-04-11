@@ -19,33 +19,46 @@ import Frame.Settings.ConnectionSettings.{default => defaultSettings}
 
 object H2Server {
 
+  /*
+  TlsContext => Yes => ALPN =>  h2       => HTTP2
+                                http/1.1 => HTTP1
+                                Nothing  => Http1
+                No                       => Http1
+  
+  Http1 => Request
+            Connection: Upgrade, HTTP2-Settings
+            Upgrade: h2c
+            HTTP2-Settings: <base64url encoding of HTTP/2 SETTINGS payload>
+              => 
+                HTTP/1.1 101 Switching Protocols
+                Connection: Upgrade
+                Upgrade: h2c
 
-  def impl[F[_]: Async: Parallel](
-    host: Host, 
-    port: Port, 
-    tlsContext: TLSContext[F], 
-    httpApp: HttpApp[F], 
-    localSettings: Frame.Settings.ConnectionSettings = defaultSettings.copy(
-      maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(1000),
-      initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
-      maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
-    )
-  ) = for {
-    sg <- Network[F].socketGroup()
-    // wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
-    // currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
-    // tlsContext <- Resource.eval(Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray))//)
-    _ <- sg.server(Some(host),Some(port)).map{socket => 
-      val r = for {
-        tlsSocket <- tlsContext.server(socket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
-          l.find(_ === "h2").getOrElse("http/1.1")
-        }.some))
-        _ = println("TLS Socket Acquired")
-        _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-        _ <- Resource.eval(tlsSocket.applicationProtocol)
-          .evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
-        address <- Resource.eval(tlsSocket.remoteAddress)
+                Socket                    => Http2
+              
+            Normal                        => Resp
+
+  */
+
+
+  def fromSocket[F[_]: Async: Parallel](
+    socket: Socket[F],
+    httpApp: HttpApp[F],
+    localSettings: Frame.Settings.ConnectionSettings
+  ): Resource[F, Unit] = {
+    for {
+        address <- Resource.eval(socket.remoteAddress)
         (remotehost, remoteport) = (address.host, address.port)
+        _ <- Resource.eval(
+          socket.read(Preface.clientBV.size.toInt).flatMap{
+            case Some(s) => 
+              val received = s.toByteVector
+              if (received == Preface.clientBV) Applicative[F].unit
+              else new Throwable("Client Preface Incorrect").raiseError
+            case None => 
+              new Throwable("Client Preface Incorrect").raiseError
+          }
+        )
 
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
@@ -58,20 +71,7 @@ object H2Server {
         created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
         closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
 
-        h2 = new H2Connection(remotehost, remoteport, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, tlsSocket)
-        _ <- Resource.eval(
-          tlsSocket.read(Preface.clientBV.size.toInt).flatMap{
-            case Some(s) => 
-              val received = s.toByteVector
-              if (received == Preface.clientBV) Applicative[F].unit
-              else new Throwable("Client Preface Incorrect").raiseError
-            case None => 
-              new Throwable("Client Preface Incorrect").raiseError
-          }
-        )
-          
-
-
+        h2 = new H2Connection(remotehost, remoteport, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, socket)
         bgWrite <- h2.writeLoop.compile.drain.background
         _ <- Resource.eval(queue.offer(Chunk.singleton(Frame.Settings.ConnectionSettings.toSettings(localSettings))))
         bgRead <- h2.readLoop.compile.drain.background
@@ -81,7 +81,7 @@ object H2Server {
           Stream.fromQueueUnterminated(closed)
             .map(i => 
               Stream.eval(
-                (Temporal[F].sleep(10.seconds) >> ref.update(m => m - i)).timeout(15.seconds).attempt.start
+                (Temporal[F].sleep(1.seconds) >> ref.update(m => m - i)).timeout(15.seconds).attempt.start
               )
             ).parJoin(localSettings.maxConcurrentStreams.maxConcurrency)
             .compile
@@ -144,15 +144,57 @@ object H2Server {
           go.stream
         }
         _ <- s.compile.resource.drain
+      } yield ()
+  }
 
-      
+
+
+
+  def impl[F[_]: Async: Parallel](
+    host: Host, 
+    port: Port, 
+    tlsContextOpt: Option[TLSContext[F]], 
+    httpApp: HttpApp[F], 
+    localSettings: Frame.Settings.ConnectionSettings = defaultSettings.copy(
+      maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(1000),
+      initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
+      maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
+    )
+  ) = for {
+    sg <- Network[F].socketGroup()
+    // wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
+    // currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
+    // tlsContext <- Resource.eval(Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray))//)
+    _ <- sg.server(Some(host),Some(port)).map{socket => 
+      val r = for {
+        socket <- {
+          tlsContextOpt.fold(socket.pure[({ type R[A] = Resource[F, A]})#R])(tlsContext => 
+            for {
+              tlsSocket <- tlsContext.server(
+                socket, 
+                TLSParameters(
+                  applicationProtocols = Some(List("h2", "http/1.1")),
+                  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
+                    l.find(_ === "h2").getOrElse("http/1.1")
+                  }.some
+                )
+              )
+            // _ = println("TLS Socket Acquired")
+            _ <- Resource.eval(tlsSocket.write(Chunk.empty))
+            protocol <- Resource.eval(tlsSocket.applicationProtocol)
+              // .evalMap(s => Sync[F].delay(println(s"Protocol: $s")))
+            } yield tlsSocket
+          )
+        }
+        _ <- fromSocket(socket, httpApp, localSettings)
+        _ <- Resource.eval(socket.endOfInput >> socket.endOfOutput)
       } yield ()
 
       Stream.resource(r).handleErrorWith(e => 
         Stream.eval(Sync[F].delay(println(s"Encountered Error With Connection $e")))
-      )
+      ) 
 
-    }.parJoin(200)
+    }.parJoinUnbounded
       .compile
       .resource
       .drain

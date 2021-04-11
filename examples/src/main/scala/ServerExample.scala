@@ -52,9 +52,10 @@ object ServerTest {
         .handleErrorWith(_ => Network[F].tlsContext.fromKeyStoreFile(secondFilePath, "changeit".toCharArray, "changeit".toCharArray))
     )
     _ <- H2Server.impl(
-      Ipv4Address.fromString("0.0.0.0").get,
-      Port.fromInt(8080).get,
-      tlsContext, 
+      ipv4"0.0.0.0",
+      port"8080",
+      // tlsContext.some, 
+      None,
       simpleApp[F],
       Frame.Settings.ConnectionSettings.default
     )
