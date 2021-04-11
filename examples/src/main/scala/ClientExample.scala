@@ -27,7 +27,7 @@ object ClientTest {
 
       // {(req, resp) =>Applicative[F].pure(Outcome.Canceled())},
       tls,
-      Frame.Settings.ConnectionSettings.default
+      H2Frame.Settings.ConnectionSettings.default
     )}.use{ c => 
       val p = c.run(org.http4s.Request[F](
         org.http4s.Method.GET, 
@@ -39,7 +39,7 @@ object ClientTest {
         uri = uri"http://localhost:8080/"
         // uri = uri"https://www.nikkei.com/" // PUSH PROMISES
       ))//.putHeaders(org.http4s.headers.Connection(CIString("keep-alive")) ))
-        .use(_.body.compile.drain)
+        .use(resp => resp.body.compile.drain >> Sync[F].delay(println(s"Resp $resp")))
         // .use(_.body.chunks.fold(0){case (i, c) => i + c.size}.evalMap(i => Sync[F].delay(println("Total So Far: $i"))).compile.drain >> Sync[F].delay(println("Body Received")))
         // (p,  p, p).parTupled
         p 

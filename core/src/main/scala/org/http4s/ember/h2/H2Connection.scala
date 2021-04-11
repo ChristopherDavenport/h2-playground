@@ -10,16 +10,16 @@ import scodec.bits._
 import cats.data._
 import scala.concurrent.duration._
 
-import Frame.Settings.ConnectionSettings.{default => defaultSettings} 
+import H2Frame.Settings.ConnectionSettings.{default => defaultSettings} 
 
-class H2Connection[F[_]](
+private[h2] class H2Connection[F[_]](
   host: com.comcast.ip4s.Host,
   port: com.comcast.ip4s.Port,
   connectionType: H2Connection.ConnectionType,
-  localSettings: Frame.Settings.ConnectionSettings,
+  localSettings: H2Frame.Settings.ConnectionSettings,
   val mapRef: Ref[F, Map[Int, H2Stream[F]]],
   val state: Ref[F, H2Connection.State[F]], // odd if client, even if server
-  val outgoing: cats.effect.std.Queue[F, Chunk[Frame]],
+  val outgoing: cats.effect.std.Queue[F, Chunk[H2Frame]],
   // val outgoingData: cats.effect.std.Queue[F, Frame.Data], // TODO split data rather than backpressuring frames totally
 
   val createdStreams: cats.effect.std.Queue[F, Int],
@@ -27,7 +27,8 @@ class H2Connection[F[_]](
 
   hpack: Hpack[F],
   val streamCreateAndHeaders: Resource[F, Unit], 
-  val settingsAck: Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]],
+  val settingsAck: Deferred[F, Either[Throwable, H2Frame.Settings.ConnectionSettings]],
+  acc: ByteVector, // Any Bytes Already Read
   socket: Socket[F],
 )(implicit F: Temporal[F]){
 
@@ -47,7 +48,7 @@ class H2Connection[F[_]](
     response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body, None)
+      H2Stream.State(H2Stream.StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body, None)
     )
     stream = new H2Stream(id, localSettings, connectionType,  state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
     _ <- mapRef.update(m => m + (id -> stream))
@@ -61,7 +62,7 @@ class H2Connection[F[_]](
     response <- Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]]
     body <- cats.effect.std.Queue.unbounded[F, Either[Throwable, ByteVector]]
     refState <- Ref.of[F, H2Stream.State[F]](
-      H2Stream.State(StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body, None)
+      H2Stream.State(H2Stream.StreamState.Idle, settings.initialWindowSize.windowSize, writeBlock, localSettings.initialWindowSize.windowSize, request, response, body, None)
     )
     stream = new H2Stream(id, localSettings, connectionType, state.get.map(_.remoteSettings), refState, hpack, outgoing, closedStreams.offer(id), goAway)
     _ <- mapRef.update(m => m + (id -> stream))
@@ -77,27 +78,27 @@ class H2Connection[F[_]](
   }
 
   def writeLoop: Stream[F, Nothing] = {
-    Stream.fromQueueUnterminatedChunk[F, Frame](outgoing, Int.MaxValue)
+    Stream.fromQueueUnterminatedChunk[F, H2Frame](outgoing, Int.MaxValue)
       // .groupWithin[F](200, 5.millis)(F)
       .evalMap{
-        case g: Frame.GoAway => 
+        case g: H2Frame.GoAway => 
               mapRef.get.flatMap{ m => 
                 m.values.toList.traverse_(connection => connection.receiveGoAway(g))
-              } >> state.update(s => s.copy(closed = true)).as(g).widen[Frame]
+              } >> state.update(s => s.copy(closed = true)).as(g).widen[H2Frame]
         case otherwise => otherwise.pure[F]
       }
       // .debug(formatter = {c => s"Connection $host:$port Write- $c"})
       .chunks
       .evalMap{chunk => 
-        def go(chunk: Chunk[Frame]): F[Unit] = state.get.flatMap{ s =>
+        def go(chunk: Chunk[H2Frame]): F[Unit] = state.get.flatMap{ s =>
           val fullDataSize = chunk.foldLeft(0){
-            case (init, Frame.Data(_, data, _, _)) => init + data.size.toInt
+            case (init, H2Frame.Data(_, data, _, _)) => init + data.size.toInt
             case (init, _) => init
           }
           // println(s"Next Write Block Window - data: $fullDataSize window:${s.writeWindow} $s")
 
           if (fullDataSize <= s.writeWindow && s.writeWindow > 0) {
-            val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
+            val bv = chunk.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ H2Frame.toByteVector(frame)}
             state.update(s => s.copy(writeWindow = {s.writeWindow - fullDataSize})) >>
             socket.isOpen.ifM(
               socket.write(Chunk.byteVector(bv)),
@@ -106,15 +107,15 @@ class H2Connection[F[_]](
           } else {
             val list = chunk.toList
             val nonData = list.takeWhile{
-              case _ : Frame.Data => false
+              case _ : H2Frame.Data => false
               case _ => true
             }
             val after = list.dropWhile{
-              case _ : Frame.Data => false
+              case _ : H2Frame.Data => false
               case _ => true
             }
 
-            val bv = nonData.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ Frame.toByteVector(frame)}
+            val bv = nonData.foldLeft(ByteVector.empty){ case (acc, frame) => acc ++ H2Frame.toByteVector(frame)}
             socket.isOpen.ifM(
               socket.write(Chunk.byteVector(bv)),
               new Throwable("Socket Closed when attempting to write").raiseError
@@ -125,22 +126,23 @@ class H2Connection[F[_]](
         }
         go(chunk)
       }
-      .drain // TODO Split Frames between Data and Others Hold Data If we are approaching cap --
+      .drain 
+      // TODO Split Frames between Data and Others Hold Data If we are at cap
       //  Currently will backpressure at the data frame till its cleared
   }
 
   
   def readLoop: Stream[F, Nothing] = {
-    def p(acc: ByteVector): Pull[F, Frame, Unit] = {
+    def p(acc: ByteVector): Pull[F, H2Frame, Unit] = {
       if (acc.isEmpty) {
         Pull.eval(socket.read(localSettings.initialWindowSize.windowSize)).flatMap{
           case Some(chunk) => p(chunk.toByteVector)
           case None => println(s"Connection $host:$port readLoop Terminated with empty"); Pull.done 
         }
       } else {
-        Frame.RawFrame.fromByteVector(acc) match {
+        H2Frame.RawFrame.fromByteVector(acc) match {
           case Some((raw, leftover)) => 
-            Frame.fromRaw(raw) match {
+            H2Frame.fromRaw(raw) match {
               case Right(frame) => 
                 Pull.output1(frame) >>
                 p(leftover)
@@ -159,14 +161,14 @@ class H2Connection[F[_]](
         }
       }
     }
-    p(ByteVector.empty).stream
+    p(acc).stream
   }
       // .debug(formatter = {c => s"Connection $host:$port Read- $c"})
       .evalMap(f => state.get.map(s => (f, s)))
       .evalTap{
         // Headers and Continuation Frames are Stateful
         // Headers if not closed MUST
-        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, _, Some((h, cs)), None)) => 
+        case (c@H2Frame.Continuation(id, true, _), H2Connection.State(_, _, _, _, _, _, _, Some((h, cs)), None)) => 
           if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = None)) >> 
             mapRef.get.map(_.get(id)).flatMap{
@@ -185,7 +187,7 @@ class H2Connection[F[_]](
             println("Invalid Continuation - Protocol Error")
             goAway(H2Error.ProtocolError)
           }
-        case (c@Frame.Continuation(id, true, _), H2Connection.State(_, _,_,  _, _, _, _, None, Some((p, cs)))) => 
+        case (c@H2Frame.Continuation(id, true, _), H2Connection.State(_, _,_,  _, _, _, _, None, Some((p, cs)))) => 
           if (p.promisedStreamId == id) {
             state.update(s => s.copy(headersInProgress = None)) >> 
             mapRef.get.map(_.get(id)).flatMap{
@@ -205,7 +207,7 @@ class H2Connection[F[_]](
             println("Invalid Continuation - Protocol Error")
             goAway(H2Error.ProtocolError)
           }
-        case (c@Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, _, None, Some((h, cs)))) =>
+        case (c@H2Frame.Continuation(id, false, _), H2Connection.State(_, _, _, _, _, _, _, None, Some((h, cs)))) =>
           if (h.identifier == id) {
             state.update(s => s.copy(pushPromiseInProgress = (h, cs ::: c :: Nil).some))
           } else {
@@ -213,7 +215,7 @@ class H2Connection[F[_]](
             goAway(H2Error.ProtocolError)
           }
         
-        case (c@Frame.Continuation(id, false, _), H2Connection.State(_,_,  _, _, _, _, _, Some((h, cs)), None)) =>
+        case (c@H2Frame.Continuation(id, false, _), H2Connection.State(_,_,  _, _, _, _, _, Some((h, cs)), None)) =>
           if (h.identifier == id) {
             state.update(s => s.copy(headersInProgress = (h, cs ::: c :: Nil).some))
           } else {
@@ -229,7 +231,7 @@ class H2Connection[F[_]](
           println(s"Continuation for push promise in process, retrieved unexpected frame $f")
           goAway(H2Error.ProtocolError)
 
-        case (h@Frame.Headers(i, sd, _, true, headerBlock, _), s) => 
+        case (h@H2Frame.Headers(i, sd, _, true, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (size > s.remoteSettings.maxFrameSize.frameSize) {
             println("Header Size too large for frame size")
@@ -260,14 +262,14 @@ class H2Connection[F[_]](
                 }
             }
           }
-        case (h@Frame.Headers(i, sd, _, false, headerBlock, _), s) => 
+        case (h@H2Frame.Headers(i, sd, _, false, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (size > s.remoteSettings.maxFrameSize.frameSize) goAway(H2Error.FrameSizeError)
           else if (sd.exists(s => s.dependency == i)) goAway(H2Error.ProtocolError)
           else {
             state.update(s => s.copy(headersInProgress = Some((h, List.empty))))
           }
-        case (h@Frame.PushPromise(attachedTo ,true , i, headerBlock, _), s) => 
+        case (h@H2Frame.PushPromise(attachedTo ,true , i, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (connectionType == H2Connection.ConnectionType.Server) {
             println("Encountered Push Promise Frame a a Server")
@@ -295,21 +297,21 @@ class H2Connection[F[_]](
                 }
             }
           }
-        case (h@Frame.PushPromise(i, false, _, headerBlock, _), s) => 
+        case (h@H2Frame.PushPromise(i, false, _, headerBlock, _), s) => 
           val size = headerBlock.size.toInt
           if (size > s.remoteSettings.maxFrameSize.frameSize) goAway(H2Error.FrameSizeError)
           else {
             state.update(s => s.copy(pushPromiseInProgress = Some((h, List.empty))))
           }
   
-        case (Frame.Continuation(_, _, _), s) => 
+        case (H2Frame.Continuation(_, _, _), s) => 
           goAway(H2Error.ProtocolError)
 
-        case (settings@Frame.Settings(0,false, _), s) => 
+        case (settings@H2Frame.Settings(0,false, _), s) => 
           for {
             newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
             t <- state.modify{s => 
-              val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
+              val newSettings = H2Frame.Settings.updateSettings(settings, s.remoteSettings)
               val differenceInWindow =  newSettings.initialWindowSize.windowSize - s.remoteSettings.initialWindowSize.windowSize
               (s.copy(remoteSettings = newSettings, writeWindow = s.writeWindow , writeBlock = newWriteBlock), (newSettings, differenceInWindow, s.writeBlock))
             }
@@ -320,29 +322,29 @@ class H2Connection[F[_]](
                 stream.modifyWriteWindow(difference)
               }
             }
-            _ <- outgoing.offer(Chunk.singleton(Frame.Settings.Ack))
+            _ <- outgoing.offer(Chunk.singleton(H2Frame.Settings.Ack))
             _ <- settingsAck.complete(Either.right(settings)).void
 
           } yield ()
-        case (Frame.Settings(0, true, _), s) => Applicative[F].unit
-        case (Frame.Settings(_, _, _), s) => 
+        case (H2Frame.Settings(0, true, _), s) => Applicative[F].unit
+        case (H2Frame.Settings(_, _, _), s) => 
           println("Received Settings Not Oriented at Identifier 0")
           goAway(H2Error.ProtocolError)
-        case (g@Frame.GoAway(0, _,_,bv),s) => mapRef.get.flatMap{ m => 
+        case (g@H2Frame.GoAway(0, _,_,bv),s) => mapRef.get.flatMap{ m => 
           m.values.toList.traverse_(connection => connection.receiveGoAway(g))
-        } >> outgoing.offer(Chunk.singleton(Frame.Ping.ack))
-        case (_:Frame.GoAway, _) => 
+        } >> outgoing.offer(Chunk.singleton(H2Frame.Ping.ack))
+        case (_:H2Frame.GoAway, _) => 
           goAway(H2Error.ProtocolError)
-        case (Frame.Ping(0, false, bv),s) => 
-            outgoing.offer(Chunk.singleton(Frame.Ping.ack.copy(data = bv)))
-        case (Frame.Ping(0, true, _),s) => Applicative[F].unit
-        case (Frame.Ping(x, _, _),s) => 
+        case (H2Frame.Ping(0, false, bv),s) => 
+            outgoing.offer(Chunk.singleton(H2Frame.Ping.ack.copy(data = bv)))
+        case (H2Frame.Ping(0, true, _),s) => Applicative[F].unit
+        case (H2Frame.Ping(x, _, _),s) => 
           goAway(H2Error.ProtocolError)
 
-        case (w@Frame.WindowUpdate(_, 0), _) => 
+        case (w@H2Frame.WindowUpdate(_, 0), _) => 
           println("Encounted 0 Sized Window Update - Procol Error")
           goAway(H2Error.ProtocolError)
-        case (w@Frame.WindowUpdate(i, size), s) => 
+        case (w@H2Frame.WindowUpdate(i, size), s) => 
           i match {
             case 0 => 
               // println("Received Window Update for Connection")
@@ -357,7 +359,7 @@ class H2Connection[F[_]](
                 _ <- oldWriteBlock.complete(Right(()))
                 _ <- {
                   if (!valid) goAway(H2Error.FlowControlError)
-                  else outgoing.offer(Chunk.singleton(Frame.Ping.ack))
+                  else outgoing.offer(Chunk.singleton(H2Frame.Ping.ack))
                 }
               } yield ()
             case otherwise => 
@@ -370,7 +372,7 @@ class H2Connection[F[_]](
               }
           }
         
-        case (d@Frame.Data(i, data, _, _), st) => 
+        case (d@H2Frame.Data(i, data, _, _), st) => 
           val size = data.size.toInt
           if (size > localSettings.maxFrameSize.frameSize) {
             println("Receive Data Size Larger than Allowed Frame Size - Frame Size Error")
@@ -384,7 +386,7 @@ class H2Connection[F[_]](
                   
                   needsWindowUpdate = (newSize <= (localSettings.initialWindowSize.windowSize / 2))
                   _ <- state.update(s => s.copy(readWindow = if (needsWindowUpdate) localSettings.initialWindowSize.windowSize else newSize.toInt))
-                  _ <- if (needsWindowUpdate) outgoing.offer(Chunk.singleton(Frame.WindowUpdate(0, st.remoteSettings.initialWindowSize.windowSize - newSize.toInt))) else Applicative[F].unit
+                  _ <- if (needsWindowUpdate) outgoing.offer(Chunk.singleton(H2Frame.WindowUpdate(0, st.remoteSettings.initialWindowSize.windowSize - newSize.toInt))) else Applicative[F].unit
                   _ <- s.receiveData(d)
                 } yield ()
               case None => 
@@ -393,7 +395,7 @@ class H2Connection[F[_]](
             }
           }
         
-        case (rst@Frame.RstStream(i, _), s) => 
+        case (rst@H2Frame.RstStream(i, _), s) => 
           mapRef.get.map(_.get(i)).flatMap{
             case Some(s) => 
               s.receiveRstStream(rst)
@@ -402,17 +404,17 @@ class H2Connection[F[_]](
               goAway(H2Error.ProtocolError)
           }
 
-        case (Frame.PushPromise(_, _, _, _, _), s) => 
+        case (H2Frame.PushPromise(_, _, _, _, _), s) => 
           connectionType match {
             case H2Connection.ConnectionType.Server => 
               println("Received PushPromise as Server - Protocol Error")
               goAway(H2Error.ProtocolError)
             case H2Connection.ConnectionType.Client => Applicative[F].unit // TODO Implement Push Promise Flow
           }
-        case (Frame.Priority(i, _, i2, _), s) =>
+        case (H2Frame.Priority(i, _, i2, _), s) =>
           if (i == i2) goAway(H2Error.ProtocolError)  // Can't depend on yourself
           else Applicative[F].unit // We Do Nothing with these presently
-        case (Frame.Unknown(_), _) => Applicative[F].unit // Ignore Unknown Frames
+        case (H2Frame.Unknown(_), _) => Applicative[F].unit // Ignore Unknown Frames
       }.drain.onFinalizeCase[F]{
         case Resource.ExitCase.Errored(H2Connection.KillWithoutMessage()) => 
         Applicative[F].unit.map(_ => println(s"ReadLoop has received that is should kill")) >> 
@@ -430,15 +432,15 @@ class H2Connection[F[_]](
 
 object H2Connection {
   case class State[F[_]](
-    remoteSettings: Frame.Settings.ConnectionSettings,
+    remoteSettings: H2Frame.Settings.ConnectionSettings,
     writeWindow: Int,
     writeBlock: Deferred[F, Either[Throwable, Unit]],
     readWindow: Int,
     highestStream: Int,
     remoteHighestStream: Int,
     closed: Boolean,
-    headersInProgress: Option[(Frame.Headers, List[Frame.Continuation])],
-    pushPromiseInProgress: Option[(Frame.PushPromise, List[Frame.Continuation])]
+    headersInProgress: Option[(H2Frame.Headers, List[H2Frame.Continuation])],
+    pushPromiseInProgress: Option[(H2Frame.PushPromise, List[H2Frame.Continuation])]
   )
 
   final case class KillWithoutMessage() extends RuntimeException with scala.util.control.NoStackTrace

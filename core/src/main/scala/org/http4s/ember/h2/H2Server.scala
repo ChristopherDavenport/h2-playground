@@ -15,7 +15,7 @@ import javax.net.ssl.SSLEngine
 import com.comcast.ip4s._
 import scodec.bits._
 import cats.effect.std._
-import Frame.Settings.ConnectionSettings.{default => defaultSettings} 
+import H2Frame.Settings.ConnectionSettings.{default => defaultSettings} 
 
 object H2Server {
 
@@ -46,7 +46,7 @@ object H2Server {
   def fromSocket[F[_]: Async: Parallel](
     socket: Socket[F],
     httpApp: HttpApp[F],
-    localSettings: Frame.Settings.ConnectionSettings
+    localSettings: H2Frame.Settings.ConnectionSettings
   ): Resource[F, Unit] = {
     for {
         address <- Resource.eval(socket.remoteAddress)
@@ -65,17 +65,17 @@ object H2Server {
         ref <- Resource.eval(Concurrent[F].ref(Map[Int, H2Stream[F]]()))
         initialWriteBlock <- Resource.eval(Deferred[F, Either[Throwable, Unit]])
         stateRef <- Resource.eval(Concurrent[F].ref(H2Connection.State(defaultSettings, defaultSettings.initialWindowSize.windowSize, initialWriteBlock, localSettings.initialWindowSize.windowSize, 0, 0, false, None, None)))
-        queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[Frame]]) // TODO revisit
+        queue <- Resource.eval(cats.effect.std.Queue.unbounded[F, Chunk[H2Frame]]) // TODO revisit
         hpack <- Resource.eval(Hpack.create[F])
-        settingsAck <- Resource.eval(Deferred[F, Either[Throwable, Frame.Settings.ConnectionSettings]])
+        settingsAck <- Resource.eval(Deferred[F, Either[Throwable, H2Frame.Settings.ConnectionSettings]])
         streamCreationLock <- Resource.eval(cats.effect.std.Semaphore[F](1))
         // data <- Resource.eval(cats.effect.std.Queue.unbounded[F, Frame.Data])
         created <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
         closed <- Resource.eval(cats.effect.std.Queue.unbounded[F, Int])
 
-        h2 = new H2Connection(remotehost, remoteport, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, socket)
+        h2 = new H2Connection(remotehost, remoteport, H2Connection.ConnectionType.Server, localSettings, ref, stateRef, queue, created, closed, hpack, streamCreationLock.permit, settingsAck, ByteVector.empty, socket)
         bgWrite <- h2.writeLoop.compile.drain.background
-        _ <- Resource.eval(queue.offer(Chunk.singleton(Frame.Settings.ConnectionSettings.toSettings(localSettings))))
+        _ <- Resource.eval(queue.offer(Chunk.singleton(H2Frame.Settings.ConnectionSettings.toSettings(localSettings))))
         bgRead <- h2.readLoop.compile.drain.background
 
         settings <- Resource.eval(h2.settingsAck.get.rethrow)
@@ -159,10 +159,10 @@ object H2Server {
     port: Port, 
     tlsContextOpt: Option[TLSContext[F]], 
     httpApp: HttpApp[F], 
-    localSettings: Frame.Settings.ConnectionSettings = defaultSettings.copy(
-      maxConcurrentStreams = Frame.Settings.SettingsMaxConcurrentStreams(1000),
-      initialWindowSize = Frame.Settings.SettingsInitialWindowSize.MAX,
-      maxFrameSize = Frame.Settings.SettingsMaxFrameSize.MAX
+    localSettings: H2Frame.Settings.ConnectionSettings = defaultSettings.copy(
+      maxConcurrentStreams = H2Frame.Settings.SettingsMaxConcurrentStreams(1000),
+      initialWindowSize = H2Frame.Settings.SettingsInitialWindowSize.MAX,
+      maxFrameSize = H2Frame.Settings.SettingsMaxFrameSize.MAX
     )
   ) = for {
     sg <- Network[F].socketGroup()

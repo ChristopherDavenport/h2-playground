@@ -2,10 +2,10 @@ package org.http4s.ember.h2
 
 import cats.syntax.all._
 sealed abstract class H2Error(val value: Int){
-  def toGoAway(highest: Int) : Frame.GoAway = 
-    Frame.GoAway(0, highest, value, None)
-  def toRst(stream: Int): Frame.RstStream = 
-    Frame.RstStream(stream, value)
+  def toGoAway(highest: Int) : H2Frame.GoAway = 
+    H2Frame.GoAway(0, highest, value, None)
+  def toRst(stream: Int): H2Frame.RstStream = 
+    H2Frame.RstStream(stream, value)
   
 }
 object H2Error {
@@ -113,7 +113,4 @@ object H2Error {
     instead of HTTP/2.
   */
   case object Http_1_1_Required extends H2Error(0xd)
-
-
-
 }

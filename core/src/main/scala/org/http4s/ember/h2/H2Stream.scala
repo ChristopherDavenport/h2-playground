@@ -11,17 +11,18 @@ import scodec.bits._
 
 // Will eventually hold client/server through single interface matching that of the designed paradigm
 // in StreamState
-class H2Stream[F[_]: Concurrent](
+private[h2] class H2Stream[F[_]: Concurrent](
   val id: Int,
-  localSettings: Frame.Settings.ConnectionSettings,
+  localSettings: H2Frame.Settings.ConnectionSettings,
   connectionType: H2Connection.ConnectionType,
-  val remoteSettings: F[Frame.Settings.ConnectionSettings],
+  val remoteSettings: F[H2Frame.Settings.ConnectionSettings],
   val state: Ref[F, H2Stream.State[F]],
   val hpack: Hpack[F],
-  val enqueue: cats.effect.std.Queue[F, Chunk[Frame]],
+  val enqueue: cats.effect.std.Queue[F, Chunk[H2Frame]],
   val onClosed: F[Unit],
   val goAway: H2Error => F[Unit]
 ){
+  import H2Stream.StreamState
 
   def sendPushPromise(originating: Int, headers: NonEmptyList[(String, String, Boolean)]): F[Unit] = {
     connectionType match {
@@ -31,7 +32,7 @@ class H2Stream[F[_]: Concurrent](
             case StreamState.Idle => 
               for {
                 h <- hpack.encodeHeaders(headers)
-                frame = Frame.PushPromise(originating, true, id, h, None)
+                frame = H2Frame.PushPromise(originating, true, id, h, None)
                 _ <- state.update(s => s.copy(state = StreamState.ReservedLocal))
                 _ <- enqueue.offer(Chunk.singleton(frame))
               } yield ()
@@ -51,7 +52,7 @@ class H2Stream[F[_]: Concurrent](
       s.state match {
         case StreamState.Idle | StreamState.HalfClosedRemote | StreamState.Open | StreamState.ReservedLocal  => 
           hpack.encodeHeaders(headers).map(bv => 
-            Frame.Headers(id, None, endStream, true, bv, None)
+            H2Frame.Headers(id, None, endStream, true, bv, None)
           ).flatMap(f => enqueue.offer(Chunk.singleton(f))) <* 
             state.modify{b => 
               val newState: StreamState = (b.state, endStream) match {
@@ -77,7 +78,7 @@ class H2Stream[F[_]: Concurrent](
     s.state match {
       case StreamState.Open | StreamState.HalfClosedRemote => 
         if (bv.size.toInt <= s.writeWindow && s.writeWindow > 0){ 
-          enqueue.offer(Chunk.singleton(Frame.Data(id, bv, None, endStream))) >> {
+          enqueue.offer(Chunk.singleton(H2Frame.Data(id, bv, None, endStream))) >> {
             state.modify{s => 
               val newState = if (endStream) {
                   s.state match {
@@ -106,7 +107,7 @@ class H2Stream[F[_]: Concurrent](
                 (s.copy(writeWindow = {s.writeWindow - head.size.toInt}), (head, tail))
               }
               (head, tail) = t
-              _ <- enqueue.offer(Chunk.singleton(Frame.Data(id, head, None, false)))
+              _ <- enqueue.offer(Chunk.singleton(H2Frame.Data(id, head, None, false)))
               out <- sendData(tail, endStream)
             } yield out
 
@@ -116,7 +117,7 @@ class H2Stream[F[_]: Concurrent](
     }
   }
 
-  def receiveHeaders(headers: Frame.Headers, continuations: Frame.Continuation*): F[Unit] = state.get.flatMap{
+  def receiveHeaders(headers: H2Frame.Headers, continuations: H2Frame.Continuation*): F[Unit] = state.get.flatMap{
     s => 
     s.state match {
       case StreamState.Open | StreamState.HalfClosedLocal | StreamState.Idle | StreamState.ReservedRemote => 
@@ -175,7 +176,7 @@ class H2Stream[F[_]: Concurrent](
   }
 
 
-  def receivePushPromise(headers: Frame.PushPromise, continuations: Frame.Continuation*): F[Unit] =  state.get.flatMap{ 
+  def receivePushPromise(headers: H2Frame.PushPromise, continuations: H2Frame.Continuation*): F[Unit] =  state.get.flatMap{ 
     s => 
     connectionType match {
       case H2Connection.ConnectionType.Client => 
@@ -204,7 +205,7 @@ class H2Stream[F[_]: Concurrent](
     }
   }
 
-  def receiveData(data: Frame.Data): F[Unit] = state.get.flatMap{ s => 
+  def receiveData(data: H2Frame.Data): F[Unit] = state.get.flatMap{ s => 
     s.state match {
       case StreamState.Open | StreamState.HalfClosedLocal => 
         val newSize = s.readWindow - data.data.size.toInt
@@ -230,7 +231,7 @@ class H2Stream[F[_]: Concurrent](
           )
           _ <- if (sizeReadOk) s.readBuffer.offer(Either.right(data.data)) else rstStream(H2Error.ProtocolError)
 
-          _ <- if (needsWindowUpdate && !isClosed && sizeReadOk) enqueue.offer(Chunk.singleton(Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize))) else Applicative[F].unit
+          _ <- if (needsWindowUpdate && !isClosed && sizeReadOk) enqueue.offer(Chunk.singleton(H2Frame.WindowUpdate(id, localSettings.initialWindowSize.windowSize - newSize))) else Applicative[F].unit
           _ <- if (isClosed && sizeReadOk) onClosed else Applicative[F].unit
         } yield ()
       case StreamState.Idle => 
@@ -259,7 +260,7 @@ class H2Stream[F[_]: Concurrent](
 
   // Broadcast Frame
   // Will eventually allow us to know we can retry if we are above the processed window declared
-  def receiveGoAway(goAway: Frame.GoAway): F[Unit] = for {
+  def receiveGoAway(goAway: H2Frame.GoAway): F[Unit] = for {
     s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
     t = new Throwable(s"Received GoAway, cancelling: $goAway")
     _ <- s.writeBlock.complete(Left(t))
@@ -269,7 +270,7 @@ class H2Stream[F[_]: Concurrent](
     _ <- onClosed
   } yield ()
 
-  def receiveRstStream(rst: Frame.RstStream): F[Unit] = for {
+  def receiveRstStream(rst: H2Frame.RstStream): F[Unit] = for {
     s <- state.modify(s => (s.copy(state = StreamState.Closed), s))
     t = new Throwable(s"Received RstStream, cancelling: $rst")
     _ <- s.writeBlock.complete(Left(t))
@@ -280,7 +281,7 @@ class H2Stream[F[_]: Concurrent](
   } yield ()
 
   // Important for telling folks we can send more data
-  def receiveWindowUpdate(window: Frame.WindowUpdate): F[Unit] = for {
+  def receiveWindowUpdate(window: H2Frame.WindowUpdate): F[Unit] = for {
     newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
     t <- state.modify{s => 
       val oldSize = s.writeWindow
@@ -355,5 +356,56 @@ object H2Stream {
   ){
     override def toString = 
       s"H2Stream.State(state=$state, writeWindow=$writeWindow, readWindow=$readWindow, contentLengthCheck=$contentLengthCheck)"
+  }
+
+  sealed trait StreamState
+  object StreamState {
+  /*
+                                  +--------+
+                          send PP |        | recv PP
+                        ,--------|  idle  |--------.
+                        /         |        |         \
+                      v          +--------+          v
+                +----------+          |           +----------+
+                |          |          | send H /  |          |
+        ,------| reserved |          | recv H    | reserved |------.
+        |      | (local)  |          |           | (remote) |      |
+        |      +----------+          v           +----------+      |
+        |          |             +--------+             |          |
+        |          |     recv ES |        | send ES     |          |
+        |   send H |     ,-------|  open  |-------.     | recv H   |
+        |          |    /        |        |        \    |          |
+        |          v   v         +--------+         v   v          |
+        |      +----------+          |           +----------+      |
+        |      |   half   |          |           |   half   |      |
+        |      |  closed  |          | send R /  |  closed  |      |
+        |      | (remote) |          | recv R    | (local)  |      |
+        |      +----------+          |           +----------+      |
+        |           |                |                 |           |
+        |           | send ES /      |       recv ES / |           |
+        |           | send R /       v        send R / |           |
+        |           | recv R     +--------+   recv R   |           |
+        | send R /  `----------->|        |<-----------'  send R / |
+        | recv R                 | closed |               recv R   |
+        `----------------------->|        |<----------------------'
+                                  +--------+
+
+            send:   endpoint sends this frame
+            recv:   endpoint receives this frame
+
+            H:  HEADERS frame (with implied CONTINUATIONs)
+            PP: PUSH_PROMISE frame (with implied CONTINUATIONs)
+            ES: END_STREAM flag
+            R:  RST_STREAM frame
+  */
+    
+    case object Idle extends StreamState // Transition to ReservedLocal/ReservedRemote/Open
+    case object ReservedLocal extends StreamState // Transition to HalfClosedRemote/Closed
+    case object ReservedRemote extends StreamState // Transition to HalfClosedLocal/Closed
+    case object Open extends StreamState // Transition to HalfClosedRemote/HalfClosedLocal/Closed
+    case object HalfClosedRemote extends StreamState // Transition to Closed
+    case object HalfClosedLocal extends StreamState // Transition to Closed
+    case object Closed extends StreamState // Terminal
+
   }
 }

@@ -12,12 +12,12 @@ import java.nio.charset.StandardCharsets
 import scala.collection.mutable.ListBuffer
 
 import cats.data._
-trait Hpack[F[_]]{
+private[h2] trait Hpack[F[_]]{
   def encodeHeaders(headers: NonEmptyList[(String, String, Boolean)]): F[ByteVector]
   def decodeHeaders(bv: ByteVector): F[NonEmptyList[(String, String)]]
 }
 
-object Hpack {
+private[h2] object Hpack {
 
   def create[F[_]: Async]: F[Hpack[F]] = for {
     eLock <- Semaphore[F](1)

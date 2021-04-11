@@ -7,7 +7,7 @@ import org.typelevel.ci._
 import cats.data._
 
 /** HTTP/2 pseudo headers */
-object PseudoHeaders {
+private[h2] object PseudoHeaders {
   // Request pseudo headers
   val METHOD = ":method"
   val SCHEME = ":scheme"

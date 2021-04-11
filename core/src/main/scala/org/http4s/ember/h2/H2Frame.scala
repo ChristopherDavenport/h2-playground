@@ -4,8 +4,8 @@ import cats._
 import cats.syntax.all._
 import scodec.bits._
 
-sealed trait Frame
-object Frame {
+sealed trait H2Frame
+object H2Frame {
 /*
   All frames begin with a fixed 9-octet header followed by a variable-
   length payload.
@@ -94,7 +94,7 @@ object Frame {
     }
   }
 
-  def fromRaw(rawFrame: RawFrame): Either[H2Error, Frame] = {
+  def fromRaw(rawFrame: RawFrame): Either[H2Error, H2Frame] = {
     rawFrame.`type` match {
       case Data.`type` => Data.fromRaw(rawFrame)
       case Headers.`type` => Headers.fromRaw(rawFrame)
@@ -110,7 +110,7 @@ object Frame {
     }
   }
 
-  def toRaw(frame: Frame): RawFrame = frame match {
+  def toRaw(frame: H2Frame): RawFrame = frame match {
     case d: Data => Data.toRaw(d)
     case h: Headers => Headers.toRaw(h)
     case p: Priority => Priority.toRaw(p)
@@ -124,13 +124,11 @@ object Frame {
     case unknown: Unknown => unknown.raw
   }
 
-  def toByteVector(frame: Frame): ByteVector = 
+  def toByteVector(frame: H2Frame): ByteVector = 
     toRaw.andThen(RawFrame.toByteVector)(frame)
 
 
-  case class Unknown(raw: RawFrame) extends Frame {
-
-  }
+  final case class Unknown(raw: RawFrame) extends H2Frame
 
   /*
     +---------------+
@@ -141,7 +139,7 @@ object Frame {
     |                           Padding (*)                       ...
     +---------------------------------------------------------------+
     */
-  case class Data(identifier: Int, data: ByteVector, pad: Option[ByteVector], endStream: Boolean) extends Frame{
+  final case class Data(identifier: Int, data: ByteVector, pad: Option[ByteVector], endStream: Boolean) extends H2Frame{
     override def toString: String = s"Data(identifier=$identifier, data=$data, pad=$pad, endStream=$endStream)"
   }
   object Data {
@@ -205,14 +203,14 @@ object Frame {
     |                           Padding (*)                       ...
     +---------------------------------------------------------------+
   */
-  case  class Headers(
+  final case class Headers(
     identifier: Int, 
     dependency: Option[Headers.StreamDependency],
     endStream: Boolean, // No Body Follows
     endHeaders: Boolean,  // Whether or not to Expect Continuation Frame (if false, continuation must directly follow)
     headerBlock: ByteVector,
     padding: Option[ByteVector]
-  ) extends Frame{
+  ) extends H2Frame{
     override def toString: String = 
       s"Headers(identifier=$identifier, dependency=$dependency, endStream=$endStream, endHeaders=$endHeaders, headerBlock=$headerBlock, padding=$padding)"
   }
@@ -340,12 +338,12 @@ object Frame {
     |   Weight (8)  |
     +-+-------------+
   */
-  case class Priority(
+  final case class Priority(
     identifier: Int, 
     exclusive: Boolean,
     streamDependency: Int,
     weight: Byte
-  ) extends Frame
+  ) extends H2Frame
   object Priority {
     val `type`: Byte = 0x2
     def fromRaw(raw: RawFrame): Either[H2Error, Priority] = {
@@ -385,10 +383,10 @@ object Frame {
     |                        Error Code (32)                        |
     +---------------------------------------------------------------+
   */
-  case class RstStream(
+  final case class RstStream(
     identifier: Int, 
     value: Integer
-  ) extends Frame{
+  ) extends H2Frame{
     override def toString = s"RstStream(identifier=$identifier, value=${H2Error.fromInt(value).getOrElse(value)})"
   }
   object RstStream {
@@ -418,11 +416,11 @@ object Frame {
     |                        Value (32)                             |
     +---------------------------------------------------------------+
   */
-  case class Settings(
+  final case class Settings(
     identifier: Int,
     ack: Boolean,
     list: List[Settings.Setting]
-  ) extends Frame {
+  ) extends H2Frame {
     override def toString: String = 
       if (identifier == 0 && ack && list.isEmpty) "Settings.Ack"
       else if (identifier == 0 && !ack) s"Settings(${list.map(_.toString).intercalate(", ")})"
@@ -450,7 +448,7 @@ object Frame {
       }
     }
 
-    case class ConnectionSettings(
+    final case class ConnectionSettings(
       tableSize: SettingsHeaderTableSize,
       enablePush: SettingsEnablePush,
       maxConcurrentStreams: SettingsMaxConcurrentStreams,
@@ -545,13 +543,13 @@ object Frame {
       }
     }
     //The initial value is 4,096 octets
-    case class SettingsHeaderTableSize(size: Integer) extends Setting(0x1, size)
+    final case class SettingsHeaderTableSize(size: Integer) extends Setting(0x1, size)
     // Default true
-    case class SettingsEnablePush(isEnabled: Boolean) extends Setting(0x2, if (isEnabled) 1 else 0)
+    final case class SettingsEnablePush(isEnabled: Boolean) extends Setting(0x2, if (isEnabled) 1 else 0)
     // Unbounded
-    case class SettingsMaxConcurrentStreams(maxConcurrency: Integer) extends Setting(0x3, maxConcurrency)
+    final case class SettingsMaxConcurrentStreams(maxConcurrency: Integer) extends Setting(0x3, maxConcurrency)
     // The initial value is 2^16-1 (65,535) octets.
-    case class SettingsInitialWindowSize(windowSize: Integer) extends Setting(0x4, windowSize)
+    final case class SettingsInitialWindowSize(windowSize: Integer) extends Setting(0x4, windowSize)
     object SettingsInitialWindowSize {
       val MAX = SettingsInitialWindowSize(Int.MaxValue-1)
       val MIN = SettingsInitialWindowSize(65536-1)
@@ -567,7 +565,7 @@ object Frame {
     // The initial value is 2^14 (16,384) octets
     // 2^14 (16,384) and 2^24-1
   //  (16,777,215) octets, inclusive.
-    case class SettingsMaxFrameSize(frameSize: Int) extends Setting(0x5, frameSize)
+    final case class SettingsMaxFrameSize(frameSize: Int) extends Setting(0x5, frameSize)
     object SettingsMaxFrameSize {
       val MAX = SettingsMaxFrameSize(16777215)
       val MIN = SettingsMaxFrameSize(16384)
@@ -580,11 +578,11 @@ object Frame {
     // uncompressed size of header fields, including the length of the
     // name and value in octets plus an overhead of 32 octets for each
     // header field.
-    case class SettingsMaxHeaderListSize(listSize: Int) extends Setting(0x6, listSize)
+    final case class SettingsMaxHeaderListSize(listSize: Int) extends Setting(0x6, listSize)
     // DO NOT PROCESS
     // An endpoint that receives a SETTINGS frame with any unknown or
     // unsupported identifier MUST ignore that setting.
-    case class Unknown(override val identifier: Short, override val value: Integer) extends Setting(identifier, value)
+    final case class Unknown(override val identifier: Short, override val value: Integer) extends Setting(identifier, value)
   }
 
 
@@ -599,7 +597,7 @@ object Frame {
     |                           Padding (*)                       ...
     +---------------------------------------------------------------+
   */
-  case class PushPromise(identifier: Int, endHeaders: Boolean, promisedStreamId: Int, headerBlock: ByteVector, padding: Option[ByteVector]) extends Frame
+  final case class PushPromise(identifier: Int, endHeaders: Boolean, promisedStreamId: Int, headerBlock: ByteVector, padding: Option[ByteVector]) extends H2Frame
   object PushPromise {
     val `type`: Byte = 0x5
     def toRaw(push: PushPromise): RawFrame = {
@@ -665,7 +663,7 @@ object Frame {
     |                                                               |
     +---------------------------------------------------------------+
   */
-  case class Ping(identifier: Int, ack: Boolean, data: ByteVector) extends Frame{
+  final case class Ping(identifier: Int, ack: Boolean, data: ByteVector) extends H2Frame{
     override def toString: String = 
       if (identifier == 0 && ack) "Ping.Ack"
       else if (identifier == 0 && !ack) "Ping"
@@ -707,7 +705,7 @@ object Frame {
     |                  Additional Debug Data (*)                    |
     +---------------------------------------------------------------+
   */
-  case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Option[ByteVector]) extends Frame{
+  final case class GoAway(identifier: Int, lastStreamId: Int, errorCode: Integer, additionalDebugData: Option[ByteVector]) extends H2Frame{
     override def toString = 
       s"GoAway(identifier=$identifier, lastStreamId=$lastStreamId, errorCode=${H2Error.fromInt(errorCode).getOrElse(errorCode)}, additionalDebugData=$additionalDebugData)"
   }
@@ -763,7 +761,7 @@ object Frame {
     |R|              Window Size Increment (31)                     |
     +-+-------------------------------------------------------------+
   */
-  case class WindowUpdate(identifier: Int, windowSizeIncrement: Int) extends Frame
+  final case class WindowUpdate(identifier: Int, windowSizeIncrement: Int) extends H2Frame
   object WindowUpdate {
     val `type`: Byte = 0x8
 
@@ -800,7 +798,7 @@ object Frame {
     |                   Header Block Fragment (*)                 ...
     +---------------------------------------------------------------+
   */
-  case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: ByteVector) extends Frame{
+  final case class Continuation(identifier: Int, endHeaders: Boolean, headerBlockFragment: ByteVector) extends H2Frame{
     override def toString = s"Continuation(identifier=$identifier, endHeader=$endHeaders, headerBlockFragment=$headerBlockFragment)"
   }
   object Continuation {

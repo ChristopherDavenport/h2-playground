@@ -57,7 +57,7 @@ object ServerTest {
       // tlsContext.some, 
       None,
       simpleApp[F],
-      Frame.Settings.ConnectionSettings.default
+      H2Frame.Settings.ConnectionSettings.default
     )
   } yield ()
   
