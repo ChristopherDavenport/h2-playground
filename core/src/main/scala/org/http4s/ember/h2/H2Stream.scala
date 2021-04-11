@@ -74,9 +74,10 @@ class H2Stream[F[_]: Concurrent](
     }
     
   def sendData(bv: ByteVector, endStream: Boolean): F[Unit] = state.get.flatMap{ s => 
+    // println(s"Send Data Attempting $bv $s")
     s.state match {
       case StreamState.Open | StreamState.HalfClosedRemote => 
-        if (bv.size.toInt <= s.writeWindow){ 
+        if (bv.size.toInt <= s.writeWindow && s.writeWindow > 0){ 
           enqueue.offer(Chunk.singleton(Frame.Data(id, bv, None, endStream))) >> {
             state.modify{s => 
               val newState = if (endStream) {
@@ -98,10 +99,19 @@ class H2Stream[F[_]: Concurrent](
             )
           }
         } else {
-          val head = bv.take(s.writeWindow)
-          val tail = bv.drop(s.writeWindow)
-          enqueue.offer(Chunk.singleton(Frame.Data(id, head, None, false))) >> 
-          s.writeBlock.get.rethrow >> sendData(tail, endStream)
+          if (s.writeWindow > 0) {
+            for {
+              t <- state.modify{s => 
+                val head = bv.take(s.writeWindow)
+                val tail = bv.drop(s.writeWindow)
+                (s.copy(writeWindow = {s.writeWindow - head.size.toInt}), (head, tail))
+              }
+              (head, tail) = t
+              _ <- enqueue.offer(Chunk.singleton(Frame.Data(id, head, None, false)))
+              out <- sendData(tail, endStream)
+            } yield out
+
+          } else s.writeBlock.get.rethrow >> sendData(bv, endStream)
         }  
       case _ => new Throwable("Stream Was Closed").raiseError
     }
@@ -274,9 +284,12 @@ class H2Stream[F[_]: Concurrent](
   def receiveWindowUpdate(window: Frame.WindowUpdate): F[Unit] = for {
     newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
     t <- state.modify{s => 
-      val newSize = s.writeWindow + window.windowSizeIncrement
+      val oldSize = s.writeWindow
+      val newSize = oldSize + window.windowSizeIncrement
       val sizeValid = (s.writeWindow >= 0 && newSize >= 0) || s.writeWindow < 0 // Less than 2^31-1
-      (s.copy(writeBlock = newWriteBlock, writeWindow = newSize), (s.writeBlock, sizeValid))
+      val newS = s.copy(writeBlock = newWriteBlock, writeWindow = newSize)
+      // println(s"Receive Window Update $newS - increment: ${window.windowSizeIncrement} oldSize: $oldSize")
+      (newS, (s.writeBlock, sizeValid))
     }
     (oldWriteBlock, valid) = t
 
@@ -290,7 +303,9 @@ class H2Stream[F[_]: Concurrent](
     newWriteBlock <- Deferred[F, Either[Throwable, Unit]]
     oldWriteBlock <- state.modify{s => 
       val newSize = s.writeWindow + amount
-      (s.copy(writeBlock = newWriteBlock, writeWindow = newSize), s.writeBlock)
+      val newS = s.copy(writeBlock = newWriteBlock, writeWindow = newSize)
+      // println(s"Modify Write Window $newS")
+      (newS, s.writeBlock)
     }
 
     _ <- oldWriteBlock.complete(Right(())).void
@@ -338,5 +353,8 @@ object H2Stream {
     response: Deferred[F, Either[Throwable, org.http4s.Response[fs2.Pure]]],
     readBuffer: cats.effect.std.Queue[F, Either[Throwable, ByteVector]],
     contentLengthCheck: Option[(Long, Long)]
-  )
+  ){
+    override def toString = 
+      s"H2Stream.State(state=$state, writeWindow=$writeWindow, readWindow=$readWindow, contentLengthCheck=$contentLengthCheck)"
+  }
 }

@@ -311,7 +311,7 @@ class H2Connection[F[_]](
             t <- state.modify{s => 
               val newSettings = Frame.Settings.updateSettings(settings, s.remoteSettings)
               val differenceInWindow =  newSettings.initialWindowSize.windowSize - s.remoteSettings.initialWindowSize.windowSize
-              (s.copy(remoteSettings = newSettings, writeWindow = s.writeWindow + differenceInWindow, writeBlock = newWriteBlock), (newSettings, differenceInWindow, s.writeBlock))
+              (s.copy(remoteSettings = newSettings, writeWindow = s.writeWindow , writeBlock = newWriteBlock), (newSettings, differenceInWindow, s.writeBlock))
             }
             (settings, difference, oldWriteBlock) = t
             _ <- oldWriteBlock.complete(Either.right(()))
