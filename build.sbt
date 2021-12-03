@@ -23,11 +23,11 @@ val munitCatsEffectV = "1.0.6"
 lazy val `h2` = project.in(file("."))
   .disablePlugins(MimaPlugin)
   .enablePlugins(NoPublishPlugin)
-  .aggregate(core, examples, hpack)
+  .aggregate(core.jvm, core.js, examples.jvm, examples.js, hpack)
 
-// lazy val core = crossProject(JSPlatform, JVMPlatform)
-//   .crossType(CrossType.Full)
-lazy val core = project
+lazy val core = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Full)
+// lazy val core = project
   .in(file("core"))
   .settings(commonSettings)
   .settings(
@@ -38,13 +38,22 @@ lazy val hpack = project.in(file("hpack"))
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
 
-lazy val examples = project.in(file("examples"))
+lazy val examples = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Full)
+  .in(file("examples"))
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
   .settings(
     mainClass in reStart := Some("ServerMain")
   )
   .dependsOn(core)
+  .jsConfigure { project => project.enablePlugins(ScalaJSBundlerPlugin) }
+  .jsSettings(
+    Compile / mainClass := Some("ServerMain"),
+    Compile / npmDependencies in Compile += "hpack.js" -> "2.1.6",
+    // Compile / npmDevDependencies += "hpack.js" -> "2.1.6",
+    scalaJSLinkerConfig ~= { _.withModuleKind(ModuleKind.CommonJSModule)},
+  )
 
 lazy val site = project.in(file("site"))
   .disablePlugins(MimaPlugin)
@@ -52,7 +61,7 @@ lazy val site = project.in(file("site"))
   .enablePlugins(MdocPlugin)
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
-  .dependsOn(core)
+  .dependsOn(core.jvm)
   .settings{
     import microsites._
     Seq(
