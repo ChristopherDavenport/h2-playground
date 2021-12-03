@@ -1,49 +1,23 @@
+import sbtcrossproject.Platform
 import sbtcrossproject.CrossPlugin.autoImport.{crossProject, CrossType}
 
 val Scala213 = "2.13.5"
 
-ThisBuild / crossScalaVersions := Seq("3.0.0-RC2")
+ThisBuild / crossScalaVersions := Seq("3.1.0")
 ThisBuild / scalaVersion := crossScalaVersions.value.last
-
-ThisBuild / githubWorkflowArtifactUpload := false
 
 ThisBuild / githubWorkflowBuild := Seq(
   WorkflowStep.Sbt(List("test")),
 )
 
-ThisBuild / githubWorkflowTargetTags ++= Seq("v*")
 
-// currently only publishing tags
-ThisBuild / githubWorkflowPublishTargetBranches :=
-  Seq(RefPredicate.StartsWith(Ref.Tag("v")), RefPredicate.Equals(Ref.Branch("main")))
+val catsV = "2.7.0"
+val catsEffectV = "3.3.0"
+val fs2V = "3.2.2"
+val http4sV = "0.23.6"
 
-ThisBuild / githubWorkflowPublishPreamble ++= Seq(
-  WorkflowStep.Use("olafurpg", "setup-gpg", "v3")
-)
+val munitCatsEffectV = "1.0.6"
 
-ThisBuild / githubWorkflowPublish := Seq(
-  WorkflowStep.Sbt(
-    List("ci-release"),
-    name = Some("Publish artifacts to Sonatype"),
-    env = Map(
-      "PGP_PASSPHRASE" -> "${{ secrets.PGP_PASSPHRASE }}",
-      "PGP_SECRET" -> "${{ secrets.PGP_SECRET }}",
-      "SONATYPE_PASSWORD" -> "${{ secrets.SONATYPE_PASSWORD }}",
-      "SONATYPE_USERNAME" -> "${{ secrets.SONATYPE_USERNAME }}")),
-)
-
-
-val catsV = "2.5.0"
-val catsEffectV = "3.0.2"
-// val shapelessV = "2.3.3"
-val fs2V = "3.0.1"
-val http4sV = "1.0.0-M21"
-
-val munitCatsEffectV = "1.0.1"
-// val specs2V = "4.10.6"
-
-val kindProjectorV = "0.11.3"
-val betterMonadicForV = "0.3.1"
 
 // Projects
 lazy val `h2` = project.in(file("."))
@@ -51,7 +25,10 @@ lazy val `h2` = project.in(file("."))
   .enablePlugins(NoPublishPlugin)
   .aggregate(core, examples, hpack)
 
-lazy val core = project.in(file("core"))
+// lazy val core = crossProject(JSPlatform, JVMPlatform)
+//   .crossType(CrossType.Full)
+lazy val core = project
+  .in(file("core"))
   .settings(commonSettings)
   .settings(
     name := "h2"
@@ -111,24 +88,6 @@ lazy val site = project.in(file("site"))
 // General Settings
 lazy val commonSettings = Seq(
   testFrameworks += new TestFramework("munit.Framework"),
-  libraryDependencies ++= {
-    if (isDotty.value) Seq.empty
-    else Seq(
-      compilerPlugin("org.typelevel" % "kind-projector" % kindProjectorV cross CrossVersion.full),
-      compilerPlugin("com.olegpy" %% "better-monadic-for" % betterMonadicForV),
-    )
-  },
-  scalacOptions ++= {
-    if (isDotty.value) Seq("-source:3.0-migration")
-    else Seq()
-  },
-  Compile / doc / sources := {
-    val old = (Compile / doc / sources).value
-    if (isDotty.value)
-      Seq()
-    else
-      old
-  },
 
   libraryDependencies ++= Seq(
     "org.typelevel"               %% "cats-core"                  % catsV,

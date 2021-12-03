@@ -39,7 +39,7 @@ private[h2] class H2Connection[F[_]](
         case H2Connection.ConnectionType.Server => if (highestIsEven) s.highestStream + 2 else s.highestStream + 1
         case H2Connection.ConnectionType.Client => if (highestIsEven) s.highestStream + 1 else s.highestStream + 2
       } 
-        (s.copy(highestStream = newHighest) , (s.remoteSettings, newHighest))
+      (s.copy(highestStream = newHighest) , (s.remoteSettings, newHighest))
     }
     (settings, id) = t
   

@@ -265,7 +265,7 @@ object H2Client {
           (
             h2.runHttp2Only(req) <* 
             Resource.eval(socketMap.update( s=> s + ((host, port) -> Http2)))
-          ).handleErrorWith{
+          ).handleErrorWith[org.http4s.Response[F], Throwable]{
             case InvalidSocketType() => 
               Resource.eval(socketMap.update( s=> s + ((host, port) -> Http1))) >> 
               http1Client.run(req)
