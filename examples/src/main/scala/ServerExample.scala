@@ -45,15 +45,15 @@ object ServerTest {
   def test[F[_]: Async: Parallel] = for {
     // sg <- Network[F].socketGroup()
     wd <- Resource.eval(Sync[F].delay(System.getProperty("user.dir")))
-    currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
-    secondFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "examples/keystore.jks")))
-    tlsContext <- Resource.eval(
-      Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray)
-        .handleErrorWith(_ => Network[F].tlsContext.fromKeyStoreFile(secondFilePath, "changeit".toCharArray, "changeit".toCharArray))
-    )
+    // currentFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "keystore.jks")))
+    // secondFilePath <- Resource.eval(Sync[F].delay(Paths.get(wd, "examples/keystore.jks")))
+    // tlsContext <- Resource.eval(
+    //   Network[F].tlsContext.fromKeyStoreFile(currentFilePath, "changeit".toCharArray, "changeit".toCharArray)
+    //     .handleErrorWith(_ => Network[F].tlsContext.fromKeyStoreFile(secondFilePath, "changeit".toCharArray, "changeit".toCharArray))
+    // )
     _ <- H2Server.impl(
       ipv4"0.0.0.0",
-      port"8080",
+      port"8082",
       // tlsContext.some, 
       None,
       simpleApp[F],

@@ -89,25 +89,25 @@ private[h2] class H2Client[F[_]: Async](
   def createSocket(host: com.comcast.ip4s.Host, port: com.comcast.ip4s.Port, useTLS: Boolean, priorKnowledge: Boolean): Resource[F, (Socket[F], SocketType)] = for {
     baseSocket <- sg.client(SocketAddress(host, port))
     socket <- {
-      if (useTLS){
-        for {
-          tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
-            l.find(_ === "h2").getOrElse("http/1.1")
-          }.some), None)
-          _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-          protocol <- Resource.eval(tlsSocket.applicationProtocol).map(Option(_))
-          socketType <- protocol match {
-            case Some("h2") =>  Resource.pure(Http2)
-            case Some("http/1.1") => Resource.pure(Http1)
-            case Some(other) => Resource.eval(new Throwable("Unknown Protocol Received").raiseError[F, SocketType])
-            case None => Resource.eval(Http1.pure[F])
-          }
-        } yield (tlsSocket, socketType)
-      } else {
+      // if (useTLS){
+      //   for {
+      //     tlsSocket <- tls.client(baseSocket, TLSParameters(applicationProtocols = Some(List("h2", "http/1.1")),  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
+      //       l.find(_ === "h2").getOrElse("http/1.1")
+      //     }.some), None)
+      //     _ <- Resource.eval(tlsSocket.write(Chunk.empty))
+      //     protocol <- Resource.eval(tlsSocket.applicationProtocol).map(Option(_))
+      //     socketType <- protocol match {
+      //       case Some("h2") =>  Resource.pure(Http2)
+      //       case Some("http/1.1") => Resource.pure(Http1)
+      //       case Some(other) => Resource.eval(new Throwable("Unknown Protocol Received").raiseError[F, SocketType])
+      //       case None => Resource.eval(Http1.pure[F])
+      //     }
+      //   } yield (tlsSocket, socketType)
+      // } else {
         val socketType = if (priorKnowledge) Http2 else Http1
         val out = (baseSocket, socketType)
         Resource.pure(out)
-      }
+      // }
     }
   } yield socket
     
@@ -220,7 +220,7 @@ object H2Client {
     settings: H2Frame.Settings.ConnectionSettings = defaultSettings
   ): Resource[F, org.http4s.client.Client[F]] = {
     for {
-      sg <- Network[F].socketGroup()
+      // sg <- Network[F].socketGroup()
       mapH2 <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), (H2Connection[F], F[Unit])]()))
       socketMap <- Resource.eval(Concurrent[F].ref(Map[(com.comcast.ip4s.Host, com.comcast.ip4s.Port), SocketType]()))
       http1Client <- org.http4s.ember.client.EmberClientBuilder.default.build
@@ -238,7 +238,7 @@ object H2Client {
         .compile
         .drain
         .background
-      h2 = new H2Client(sg, settings, tlsContext, mapH2, onPushPromise)
+      h2 = new H2Client(Network[F], settings, tlsContext, mapH2, onPushPromise)
     } yield org.http4s.client.Client{req => 
       for {
         host <- Resource.eval(

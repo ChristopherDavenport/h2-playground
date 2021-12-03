@@ -39,7 +39,7 @@ lazy val hpack = project.in(file("hpack"))
   .settings(commonSettings)
 
 lazy val examples = crossProject(JSPlatform, JVMPlatform)
-  .crossType(CrossType.Full)
+  .crossType(CrossType.Pure)
   .in(file("examples"))
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
@@ -53,6 +53,7 @@ lazy val examples = crossProject(JSPlatform, JVMPlatform)
     Compile / npmDependencies in Compile += "hpack.js" -> "2.1.6",
     // Compile / npmDevDependencies += "hpack.js" -> "2.1.6",
     scalaJSLinkerConfig ~= { _.withModuleKind(ModuleKind.CommonJSModule)},
+    scalaJSUseMainModuleInitializer := true
   )
 
 lazy val site = project.in(file("site"))
@@ -99,15 +100,15 @@ lazy val commonSettings = Seq(
   testFrameworks += new TestFramework("munit.Framework"),
 
   libraryDependencies ++= Seq(
-    "org.typelevel"               %% "cats-core"                  % catsV,
-    "org.typelevel"               %% "cats-effect"                % catsEffectV,
+    "org.typelevel"               %%% "cats-core"                  % catsV,
+    "org.typelevel"               %%% "cats-effect"                % catsEffectV,
 
-    "co.fs2"                      %% "fs2-core"                   % fs2V,
-    "co.fs2"                      %% "fs2-io"                     % fs2V,
+    "co.fs2"                      %%% "fs2-core"                   % fs2V,
+    "co.fs2"                      %%% "fs2-io"                     % fs2V,
 
-    "org.http4s"                  %% "http4s-dsl"                 % http4sV,
-    "org.http4s"                  %% "http4s-ember-server"        % http4sV,
-    "org.http4s"                  %% "http4s-ember-client"        % http4sV,
+    "org.http4s"                  %%% "http4s-dsl"                 % http4sV,
+    // "org.http4s"                  %%% "http4s-ember-server"        % http4sV,
+    "org.http4s"                  %%% "http4s-ember-client"        % http4sV,
     "com.twitter"                 % "hpack"                       % "1.0.2",
 
     "org.typelevel"               %%% "munit-cats-effect-3"        % munitCatsEffectV         % Test,

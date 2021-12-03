@@ -217,25 +217,26 @@ object H2Server {
     httpApp: HttpApp[F], 
     localSettings: H2Frame.Settings.ConnectionSettings = defaultSettings
   ) = for {
-    sg <- Network[F].socketGroup()
-    _ <- sg.server(Some(host),Some(port)).map{socket => 
+    // sg <- Network[F]
+    _ <- Network[F].server(Some(host),Some(port)).map{socket => 
       val r = for {
         socket <- {
-          tlsContextOpt.fold(socket.pure[({ type R[A] = Resource[F, A]})#R])(tlsContext => 
-            for {
-              tlsSocket <- tlsContext.server(
-                socket, 
-                TLSParameters(
-                  applicationProtocols = Some(List("h2", "http/1.1")),
-                  handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
-                    l.find(_ === "h2").getOrElse("http/1.1")
-                  }.some
-                )
-              )
-            _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-            protocol <- Resource.eval(tlsSocket.applicationProtocol)
-            } yield tlsSocket
-          )
+          socket.pure[({ type R[A] = Resource[F, A]})#R]
+          // tlsContextOpt.fold(socket.pure[({ type R[A] = Resource[F, A]})#R])(tlsContext => 
+          //   for {
+          //     tlsSocket <- tlsContext.server(
+          //       socket, 
+          //       TLSParameters(
+          //         applicationProtocols = Some(List("h2", "http/1.1")),
+          //         handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
+          //           l.find(_ === "h2").getOrElse("http/1.1")
+          //         }.some
+          //       )
+          //     )
+          //   _ <- Resource.eval(tlsSocket.write(Chunk.empty))
+          //   protocol <- Resource.eval(tlsSocket.applicationProtocol)
+          //   } yield tlsSocket
+          // )
         }
         _ <- Resource.eval(requireConnectionPreface(socket))
         _ <- fromSocket(socket, httpApp, localSettings)

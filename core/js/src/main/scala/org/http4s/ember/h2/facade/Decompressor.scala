@@ -8,5 +8,5 @@ import scala.scalajs.js.annotation.JSImport
 private[h2] class Decompressor(options: HpackOptions) extends js.Object {
   def write(raw: js.typedarray.Uint8Array): Unit = js.native
   def execute(): Unit = js.native
-  def read(): Header = js.native
+  def read(): js.Array[Header] = js.native
 }
