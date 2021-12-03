@@ -105,7 +105,7 @@ class H2FrameSpec extends CatsEffectSuite {
   test("Settings should traverse"){
     val init = H2Frame.Settings(
       0x0, 
-      true, 
+      false, 
       List(
         H2Frame.Settings.SettingsHeaderTableSize(4096),
         H2Frame.Settings.SettingsEnablePush(true),

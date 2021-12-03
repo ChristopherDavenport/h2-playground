@@ -210,6 +210,7 @@ object H2Server {
       } yield ()
   }
 
+  //
   def impl[F[_]: Async: Parallel](
     host: Host, 
     port: Port, 
@@ -223,17 +224,18 @@ object H2Server {
         socket <- {
           tlsContextOpt.fold(socket.pure[({ type R[A] = Resource[F, A]})#R])(tlsContext => 
             for {
-              tlsSocket <- tlsContext.server(
-                socket, 
+              tlsSocket <- tlsContext.serverBuilder(
+                socket
+              ).withParameters(
                 TLSParameters(
                   applicationProtocols = Some(List("h2", "http/1.1")),
                   handshakeApplicationProtocolSelector = {(t: SSLEngine, l:List[String])  => 
                     l.find(_ === "h2").getOrElse("http/1.1")
                   }.some
                 )
-              )
-            _ <- Resource.eval(tlsSocket.write(Chunk.empty))
-            protocol <- Resource.eval(tlsSocket.applicationProtocol)
+              ).build
+              _ <- Resource.eval(tlsSocket.write(Chunk.empty))
+              protocol <- Resource.eval(tlsSocket.applicationProtocol)
             } yield tlsSocket
           )
         }
