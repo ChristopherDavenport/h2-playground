@@ -23,11 +23,11 @@ val munitCatsEffectV = "1.0.6"
 lazy val `h2` = project.in(file("."))
   .disablePlugins(MimaPlugin)
   .enablePlugins(NoPublishPlugin)
-  .aggregate(core, examples, hpack)
+  .aggregate(core.jvm, core.js, examples.jvm, examples.js, hpack)
 
-// lazy val core = crossProject(JSPlatform, JVMPlatform)
-//   .crossType(CrossType.Full)
-lazy val core = project
+lazy val core = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Full)
+// lazy val core = project
   .in(file("core"))
   .settings(commonSettings)
   .settings(
@@ -38,13 +38,23 @@ lazy val hpack = project.in(file("hpack"))
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
 
-lazy val examples = project.in(file("examples"))
+lazy val examples = crossProject(JSPlatform, JVMPlatform)
+  .crossType(CrossType.Pure)
+  .in(file("examples"))
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
   .settings(
     mainClass in reStart := Some("ServerMain")
   )
   .dependsOn(core)
+  .jsConfigure { project => project.enablePlugins(ScalaJSBundlerPlugin) }
+  .jsSettings(
+    Compile / mainClass := Some("ServerMain"),
+    Compile / npmDependencies in Compile += "hpack.js" -> "2.1.6",
+    // Compile / npmDevDependencies += "hpack.js" -> "2.1.6",
+    scalaJSLinkerConfig ~= { _.withModuleKind(ModuleKind.CommonJSModule)},
+    scalaJSUseMainModuleInitializer := true
+  )
 
 lazy val site = project.in(file("site"))
   .disablePlugins(MimaPlugin)
@@ -52,7 +62,7 @@ lazy val site = project.in(file("site"))
   .enablePlugins(MdocPlugin)
   .enablePlugins(NoPublishPlugin)
   .settings(commonSettings)
-  .dependsOn(core)
+  .dependsOn(core.jvm)
   .settings{
     import microsites._
     Seq(
@@ -90,15 +100,15 @@ lazy val commonSettings = Seq(
   testFrameworks += new TestFramework("munit.Framework"),
 
   libraryDependencies ++= Seq(
-    "org.typelevel"               %% "cats-core"                  % catsV,
-    "org.typelevel"               %% "cats-effect"                % catsEffectV,
+    "org.typelevel"               %%% "cats-core"                  % catsV,
+    "org.typelevel"               %%% "cats-effect"                % catsEffectV,
 
-    "co.fs2"                      %% "fs2-core"                   % fs2V,
-    "co.fs2"                      %% "fs2-io"                     % fs2V,
+    "co.fs2"                      %%% "fs2-core"                   % fs2V,
+    "co.fs2"                      %%% "fs2-io"                     % fs2V,
 
-    "org.http4s"                  %% "http4s-dsl"                 % http4sV,
-    "org.http4s"                  %% "http4s-ember-server"        % http4sV,
-    "org.http4s"                  %% "http4s-ember-client"        % http4sV,
+    "org.http4s"                  %%% "http4s-dsl"                 % http4sV,
+    // "org.http4s"                  %%% "http4s-ember-server"        % http4sV,
+    "org.http4s"                  %%% "http4s-ember-client"        % http4sV,
     "com.twitter"                 % "hpack"                       % "1.0.2",
 
     "org.typelevel"               %%% "munit-cats-effect-3"        % munitCatsEffectV         % Test,

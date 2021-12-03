@@ -3,6 +3,7 @@ package org.http4s.ember.h2
 import cats.effect._
 import cats.effect.std._
 import cats.syntax.all._
+import cats.data._
 import scodec.bits._
 import java.io.InputStream
 import java.io.ByteArrayInputStream
@@ -11,13 +12,7 @@ import com.twitter.hpack.HeaderListener
 import java.nio.charset.StandardCharsets
 import scala.collection.mutable.ListBuffer
 
-import cats.data._
-private[h2] trait Hpack[F[_]]{
-  def encodeHeaders(headers: NonEmptyList[(String, String, Boolean)]): F[ByteVector]
-  def decodeHeaders(bv: ByteVector): F[NonEmptyList[(String, String)]]
-}
-
-private[h2] object Hpack {
+private[h2] trait HpackPlatform {
 
   def create[F[_]: Async]: F[Hpack[F]] = for {
     eLock <- Semaphore[F](1)
